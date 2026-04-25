@@ -1,0 +1,43 @@
+# Web API
+fastapi
+uvicorn
+python-multipart
+sse-starlette
+
+# Configuration and logging
+python-dotenv
+loguru
+
+# Validation and auth
+pydantic[email]
+pwdlib
+
+# Database, cache, and mail
+sqlalchemy
+aiomysql
+alembic
+redis
+fastapi-mail
+
+# LLM, agents, and workflow orchestration
+langchain
+langchain-core
+langchain-community
+langchain-text-splitters
+langgraph
+langchain-qwq
+deepagents
+
+# Retrieval and vector storage
+pymilvus
+elasticsearch
+jieba
+requests
+urllib3
+
+# Document parsing
+pypdf
+pdfplumber
+docx2txt
+unstructured
+openpyxl
