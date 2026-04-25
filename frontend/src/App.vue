@@ -1,8 +1,11 @@
 <template>
   <div class="app-layout">
     <Sidebar
-      :histories="chatHistories"
-      :active-session-id="sessionId"
+      :modules="MODULES"
+      :active-module="activeModule"
+      :histories="currentHistories"
+      :active-session-id="currentSessionId"
+      @select-module="switchModule"
       @new-chat="startNewChat()"
       @select-history="selectHistory"
       @delete-history="deleteHistory"
@@ -13,11 +16,13 @@
         <template #input>
           <ChatInput
             v-model="messageInput"
-            :mode="currentMode"
+            :module-label="currentModule.label"
+            :module-hint="currentModule.hint"
+            :placeholder="currentModule.placeholder"
+            :allow-upload="currentModule.allowUpload"
             :disabled="isStreaming"
             :is-streaming="isStreaming"
             @send="sendMessage"
-            @mode-change="setMode"
             @upload-file="uploadDocument"
           />
         </template>
@@ -43,17 +48,25 @@ import NotificationToast from './components/NotificationToast.vue';
 import Sidebar from './components/Sidebar.vue';
 import {
   clearChatSession,
+  clearFileSession,
+  clearResearchSession,
+  loadFileSessionHistory,
+  loadResearchSessionHistory,
   loadSessionHistory,
+  sendFileChat,
   sendQuickChat,
+  sendResearchChat,
   streamChat,
+  streamFileChat,
+  streamResearchChat,
   uploadFile,
 } from './services/api.js';
 import {
+  buildModuleSessionId,
   createMessageId,
-  createSessionId,
   findStoredHistory,
   hasMeaningfulMessages,
-  loadChatHistories,
+  loadChatHistories as loadLocalHistories,
   normalizeMessage,
   normalizeMessages,
   removeChatHistory,
@@ -64,20 +77,84 @@ import {
 const ALLOWED_FILE_EXTENSIONS = ['.txt', '.md', '.markdown', '.pdf', '.doc', '.docx', '.xls', '.xlsx'];
 const MAX_FILE_SIZE = 50 * 1024 * 1024;
 
-const sessionId = ref(createSessionId());
-const currentMode = ref('quick');
-const messageInput = ref('');
-const currentMessages = ref([]);
-const chatHistories = ref(loadChatHistories());
-const isStreaming = ref(false);
+const MODULES = [
+  {
+    key: 'chat',
+    label: 'Chat Assistant',
+    description: 'Everyday Q&A',
+    hint: 'Quick answers',
+    placeholder: 'Ask a question',
+    allowUpload: false,
+    loadHistory: loadSessionHistory,
+    clearSession: clearChatSession,
+    sendSingle: sendQuickChat,
+    sendStream: streamChat,
+  },
+  {
+    key: 'file',
+    label: 'File Q&A',
+    description: 'Ask about uploaded files',
+    hint: 'RAG retrieval',
+    placeholder: 'Ask about files or documents',
+    allowUpload: true,
+    loadHistory: loadFileSessionHistory,
+    clearSession: clearFileSession,
+    sendSingle: sendFileChat,
+    sendStream: streamFileChat,
+  },
+  {
+    key: 'research',
+    label: 'Research',
+    description: 'Paper search and review',
+    hint: 'Research workflow',
+    placeholder: 'Ask a research question, e.g. robotic arm grasping papers',
+    allowUpload: false,
+    loadHistory: loadResearchSessionHistory,
+    clearSession: clearResearchSession,
+    sendSingle: sendResearchChat,
+    sendStream: streamResearchChat,
+  },
+];
+
+const MODULE_MAP = Object.fromEntries(MODULES.map((item) => [item.key, item]));
+
+function createModuleState(moduleKey) {
+  return {
+    sessionId: buildModuleSessionId(moduleKey),
+    messageInput: '',
+    currentMessages: [],
+    histories: loadLocalHistories(moduleKey),
+    isStreaming: false,
+  };
+}
+
+const moduleStates = reactive(
+  Object.fromEntries(MODULES.map((item) => [item.key, createModuleState(item.key)])),
+);
+
+const activeModule = ref('chat');
 const notifications = ref([]);
 const overlay = reactive({
   visible: false,
-  title: '正在处理...',
-  subtitle: '请稍候...'
+  title: 'Working...',
+  subtitle: 'Please wait...',
 });
 
+const currentState = computed(() => moduleStates[activeModule.value]);
+const currentModule = computed(() => MODULE_MAP[activeModule.value]);
+const currentHistories = computed(() => currentState.value.histories);
+const currentMessages = computed(() => currentState.value.currentMessages);
+const currentSessionId = computed(() => currentState.value.sessionId);
+const isStreaming = computed(() => currentState.value.isStreaming);
 const centered = computed(() => currentMessages.value.length === 0);
+const messageInput = computed({
+  get() {
+    return currentState.value.messageInput;
+  },
+  set(value) {
+    currentState.value.messageInput = value;
+  },
+});
 
 function createNotification(message, type = 'info') {
   return {
@@ -96,22 +173,24 @@ function showNotification(message, type = 'info') {
   }, 3000);
 }
 
-function setOverlay(visible, title = '正在处理...', subtitle = '请稍候...') {
+function setOverlay(visible, title = 'Working...', subtitle = 'Please wait...') {
   overlay.visible = visible;
   overlay.title = title;
   overlay.subtitle = subtitle;
 }
 
-function persistCurrentConversation() {
-  if (!hasMeaningfulMessages(currentMessages.value)) {
+function persistConversation(moduleKey = activeModule.value) {
+  const state = moduleStates[moduleKey];
+  if (!state || !hasMeaningfulMessages(state.currentMessages)) {
     return;
   }
 
-  chatHistories.value = upsertChatHistory(chatHistories.value, sessionId.value, currentMessages.value);
-  saveChatHistories(chatHistories.value);
+  state.histories = upsertChatHistory(state.histories, state.sessionId, state.currentMessages);
+  saveChatHistories(state.histories, moduleKey);
 }
 
-function appendMessage(payload) {
+function appendMessage(payload, moduleKey = activeModule.value) {
+  const state = moduleStates[moduleKey];
   const message = normalizeMessage({
     id: payload?.id || createMessageId(),
     type: payload?.type || 'assistant',
@@ -120,124 +199,139 @@ function appendMessage(payload) {
     loading: Boolean(payload?.loading),
     streaming: Boolean(payload?.streaming),
   });
-  currentMessages.value.push(message);
+  state.currentMessages.push(message);
   return message.id;
 }
 
-function updateMessage(messageId, updater) {
-  const index = currentMessages.value.findIndex((item) => item.id === messageId);
+function updateMessage(messageId, updater, moduleKey = activeModule.value) {
+  const state = moduleStates[moduleKey];
+  const index = state.currentMessages.findIndex((item) => item.id === messageId);
   if (index === -1) {
     return null;
   }
 
-  const previous = currentMessages.value[index];
+  const previous = state.currentMessages[index];
   const patch = typeof updater === 'function' ? updater({ ...previous }) : updater;
   const next = normalizeMessage({
     ...previous,
     ...(patch || {}),
     id: previous.id,
   });
-  currentMessages.value[index] = next;
+  state.currentMessages[index] = next;
   return next;
 }
 
-function startNewChat({ preserveCurrent = true } = {}) {
-  if (preserveCurrent) {
-    persistCurrentConversation();
+function switchModule(moduleKey) {
+  if (!MODULE_MAP[moduleKey] || moduleKey === activeModule.value || isStreaming.value) {
+    return;
   }
 
-  sessionId.value = createSessionId();
-  messageInput.value = '';
-  currentMessages.value = [];
+  persistConversation();
+  activeModule.value = moduleKey;
 }
 
-function setMode(nextMode) {
-  currentMode.value = nextMode;
+function startNewChat({ preserveCurrent = true } = {}) {
+  const state = currentState.value;
+
+  if (preserveCurrent) {
+    persistConversation();
+  }
+
+  state.sessionId = buildModuleSessionId(activeModule.value);
+  state.messageInput = '';
+  state.currentMessages = [];
 }
 
 async function selectHistory(historyId) {
-  if (isStreaming.value || historyId === sessionId.value) {
+  const state = currentState.value;
+  const moduleConfig = currentModule.value;
+
+  if (state.isStreaming || historyId === state.sessionId) {
     return;
   }
 
-  const localHistory = findStoredHistory(chatHistories.value, historyId);
+  const localHistory = findStoredHistory(state.histories, historyId);
   if (!localHistory) {
-    showNotification('未找到该会话记录', 'error');
+    showNotification('Could not find this session.', 'error');
     return;
   }
 
-  persistCurrentConversation();
+  persistConversation();
 
   try {
-    const backendHistory = await loadSessionHistory(historyId);
-    sessionId.value = historyId;
+    const backendHistory = await moduleConfig.loadHistory(historyId);
+    state.sessionId = historyId;
 
     const backendMessages = Array.isArray(backendHistory?.history) ? backendHistory.history : [];
     const nextMessages = hasMeaningfulMessages(backendMessages)
       ? backendMessages
       : (localHistory.messages || []);
 
-    currentMessages.value = normalizeMessages(nextMessages);
+    state.currentMessages = normalizeMessages(nextMessages);
   } catch (error) {
-    sessionId.value = historyId;
+    state.sessionId = historyId;
     const fallbackMessages = hasMeaningfulMessages(localHistory.messages || []) ? localHistory.messages : [];
-    currentMessages.value = normalizeMessages(fallbackMessages);
-    showNotification(`已使用本地缓存加载会话：${error.message}`, 'warning');
+    state.currentMessages = normalizeMessages(fallbackMessages);
+    showNotification(`Loaded from local cache: ${error.message}`, 'warning');
   }
 }
 
 async function deleteHistory(historyId) {
-  if (isStreaming.value) {
-    showNotification('请等待当前操作完成后再删除会话', 'warning');
+  const state = currentState.value;
+  const moduleConfig = currentModule.value;
+
+  if (state.isStreaming) {
+    showNotification('Wait for the current action to finish before deleting a session.', 'warning');
     return;
   }
 
   try {
-    await clearChatSession(historyId);
-    chatHistories.value = removeChatHistory(chatHistories.value, historyId);
-    saveChatHistories(chatHistories.value);
+    await moduleConfig.clearSession(historyId);
+    state.histories = removeChatHistory(state.histories, historyId);
+    saveChatHistories(state.histories, activeModule.value);
 
-    if (sessionId.value === historyId) {
+    if (state.sessionId === historyId) {
       startNewChat({ preserveCurrent: false });
     }
 
-    showNotification('会话已删除', 'success');
+    showNotification('Session deleted.', 'success');
   } catch (error) {
-    showNotification(`删除会话失败：${error.message}`, 'error');
+    showNotification(`Failed to delete session: ${error.message}`, 'error');
   }
 }
 
 async function sendQuickMessage(question) {
   const loadingId = appendMessage({
     type: 'assistant',
-    content: '正在思考...',
+    content: 'Thinking...',
     loading: true,
   });
 
   try {
-    const response = await sendQuickChat({
-      sessionId: sessionId.value,
+    const response = await currentModule.value.sendSingle({
+      sessionId: currentSessionId.value,
       question,
     });
-    const answer = response?.answer || '（无回复内容）';
+
+    const answer = response?.answer || '(no answer)';
     updateMessage(loadingId, {
       content: answer,
       loading: false,
       streaming: false,
     });
-    persistCurrentConversation();
+    persistConversation();
   } catch (error) {
     updateMessage(loadingId, {
-      content: `抱歉，快速对话失败：${error.message}`,
+      content: `Sorry, request failed: ${error.message}`,
       loading: false,
       streaming: false,
     });
-    persistCurrentConversation();
-    showNotification(`快速对话失败：${error.message}`, 'error');
+    persistConversation();
+    showNotification(`Chat failed: ${error.message}`, 'error');
   }
 }
 
-async function sendStreamMessage(question) {
+async function sendStreamingMessage(question) {
   const assistantId = appendMessage({
     type: 'assistant',
     content: '',
@@ -247,8 +341,8 @@ async function sendStreamMessage(question) {
   let fullResponse = '';
 
   try {
-    await streamChat({
-      sessionId: sessionId.value,
+    await currentModule.value.sendStream({
+      sessionId: currentSessionId.value,
       question,
       onEvent(payload) {
         if (!payload || typeof payload !== 'object') {
@@ -264,8 +358,8 @@ async function sendStreamMessage(question) {
           return;
         }
 
-        if (payload.type === 'done') {
-          const answer = payload.data?.answer || fullResponse || '（无回复内容）';
+        if (payload.type === 'done' || payload.type === 'complete') {
+          const answer = payload.data?.answer || fullResponse || '(no answer)';
           fullResponse = answer;
           updateMessage(assistantId, {
             content: answer,
@@ -275,29 +369,30 @@ async function sendStreamMessage(question) {
         }
 
         if (payload.type === 'error') {
-          throw new Error(payload.data || payload.message || '流式请求失败');
+          throw new Error(payload.data || payload.message || 'Streaming request failed');
         }
       },
     });
 
     updateMessage(assistantId, {
-      content: fullResponse || '（无回复内容）',
+      content: fullResponse || '(no answer)',
       streaming: false,
     });
-    persistCurrentConversation();
+    persistConversation();
   } catch (error) {
     updateMessage(assistantId, {
-      content: `抱歉，流式对话失败：${error.message}`,
+      content: `Sorry, streaming failed: ${error.message}`,
       streaming: false,
     });
-    persistCurrentConversation();
-    showNotification(`流式对话失败：${error.message}`, 'error');
+    persistConversation();
+    showNotification(`Streaming failed: ${error.message}`, 'error');
   }
 }
 
 async function sendMessage() {
-  const question = messageInput.value.trim();
-  if (!question || isStreaming.value) {
+  const state = currentState.value;
+  const question = state.messageInput.trim();
+  if (!question || state.isStreaming) {
     return;
   }
 
@@ -305,18 +400,18 @@ async function sendMessage() {
     type: 'user',
     content: question,
   });
-  persistCurrentConversation();
-  messageInput.value = '';
-  isStreaming.value = true;
+  persistConversation();
+  state.messageInput = '';
+  state.isStreaming = true;
 
   try {
-    if (currentMode.value === 'quick') {
+    if (activeModule.value === 'chat') {
       await sendQuickMessage(question);
     } else {
-      await sendStreamMessage(question);
+      await sendStreamingMessage(question);
     }
   } finally {
-    isStreaming.value = false;
+    state.isStreaming = false;
   }
 }
 
@@ -325,38 +420,43 @@ async function uploadDocument(file) {
     return;
   }
 
+  if (activeModule.value !== 'file') {
+    showNotification('File upload is only available in the File Q&A module.', 'warning');
+    return;
+  }
+
   const fileName = file.name || '';
   const lowerName = fileName.toLowerCase();
   const validExtension = ALLOWED_FILE_EXTENSIONS.some((extension) => lowerName.endsWith(extension));
   if (!validExtension) {
-    showNotification('只支持 TXT、Markdown、PDF、DOC、DOCX、XLS、XLSX 文件', 'error');
+    showNotification('Only TXT, Markdown, PDF, DOC, DOCX, XLS, and XLSX files are supported.', 'error');
     return;
   }
 
   if (file.size > MAX_FILE_SIZE) {
-    showNotification('文件大小不能超过 50MB', 'error');
+    showNotification('File size cannot exceed 50MB.', 'error');
     return;
   }
 
-  isStreaming.value = true;
-  setOverlay(true, '正在上传文件...', fileName ? `上传：${fileName}` : '请稍候...');
+  currentState.value.isStreaming = true;
+  setOverlay(true, 'Uploading file...', fileName ? `Uploading: ${fileName}` : 'Please wait...');
 
   try {
     const result = await uploadFile(file);
     if (result?.code === 200 || result?.message === 'success' || result?.data) {
       appendMessage({
         type: 'assistant',
-        content: `${fileName} 上传到知识库成功。`,
+        content: `${fileName} uploaded successfully.`,
       });
-      persistCurrentConversation();
-      showNotification('文件上传成功', 'success');
+      persistConversation();
+      showNotification('File uploaded successfully.', 'success');
     } else {
-      throw new Error(result?.message || '上传失败');
+      throw new Error(result?.message || 'Upload failed');
     }
   } catch (error) {
-    showNotification(`文件上传失败：${error.message}`, 'error');
+    showNotification(`File upload failed: ${error.message}`, 'error');
   } finally {
-    isStreaming.value = false;
+    currentState.value.isStreaming = false;
     setOverlay(false);
   }
 }

@@ -1,4 +1,4 @@
-const API_BASE = import.meta.env.VITE_API_BASE_URL || "";
+const API_BASE = import.meta.env.VITE_API_BASE_URL || '';
 
 function buildUrl(path) {
   return `${API_BASE}${path}`;
@@ -13,7 +13,7 @@ function parseMaybeJson(rawValue) {
     return rawValue;
   }
 
-  if (typeof rawValue !== "string") {
+  if (typeof rawValue !== 'string') {
     return rawValue;
   }
 
@@ -26,13 +26,13 @@ function parseMaybeJson(rawValue) {
 
 async function consumeSseResponse(response, onEvent) {
   if (!response.body) {
-    throw new Error("响应中没有可读取的数据流");
+    throw new Error('Response does not include a readable stream.');
   }
 
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
-  let buffer = "";
-  let eventName = "message";
+  let buffer = '';
+  let eventName = 'message';
   let dataLines = [];
 
   try {
@@ -40,7 +40,7 @@ async function consumeSseResponse(response, onEvent) {
       const { done, value } = await reader.read();
       if (done) {
         if (dataLines.length > 0) {
-          const rawData = dataLines.join("\n");
+          const rawData = dataLines.join('\n');
           const payload = parseMaybeJson(rawData);
           await onEvent?.({ event: eventName, rawData, data: payload });
         }
@@ -48,29 +48,29 @@ async function consumeSseResponse(response, onEvent) {
       }
 
       buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() || "";
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
 
       for (const rawLine of lines) {
-        const line = rawLine.replace(/\r$/, "");
+        const line = rawLine.replace(/\r$/, '');
 
         if (!line) {
           if (dataLines.length > 0) {
-            const rawData = dataLines.join("\n");
+            const rawData = dataLines.join('\n');
             dataLines = [];
             const payload = parseMaybeJson(rawData);
             await onEvent?.({ event: eventName, rawData, data: payload });
           }
-          eventName = "message";
+          eventName = 'message';
           continue;
         }
 
-        if (line.startsWith("event:")) {
-          eventName = line.slice(6).trim() || "message";
+        if (line.startsWith('event:')) {
+          eventName = line.slice(6).trim() || 'message';
           continue;
         }
 
-        if (line.startsWith("data:")) {
+        if (line.startsWith('data:')) {
           dataLines.push(line.slice(5).trimStart());
         }
       }
@@ -80,113 +80,196 @@ async function consumeSseResponse(response, onEvent) {
   }
 }
 
+async function postJson(path, body) {
+  const response = await fetch(buildUrl(path), {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(body)
+  });
+
+  if (!response.ok) {
+    throw new Error(`HTTP error: ${response.status}`);
+  }
+
+  const payload = await response.json();
+  if (payload?.code !== 200) {
+    throw new Error(payload?.message || 'Request failed');
+  }
+
+  return payload?.data || {};
+}
+
+async function postStream(path, body, onEvent) {
+  const response = await fetch(buildUrl(path), {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'text/event-stream'
+    },
+    body: JSON.stringify(body)
+  });
+
+  if (!response.ok) {
+    throw new Error(`HTTP error: ${response.status}`);
+  }
+
+  await consumeSseResponse(response, async ({ data }) => {
+    const payload = typeof data === 'string' ? parseMaybeJson(data) : data;
+    await onEvent?.(payload);
+  });
+}
+
+async function getJson(path) {
+  const response = await fetch(buildUrl(path));
+
+  if (!response.ok) {
+    throw new Error(`HTTP error: ${response.status}`);
+  }
+
+  return response.json();
+}
+
+async function postFormData(path, formData) {
+  const response = await fetch(buildUrl(path), {
+    method: 'POST',
+    body: formData
+  });
+
+  if (!response.ok) {
+    throw new Error(`HTTP error: ${response.status}`);
+  }
+
+  return response.json();
+}
+
 export async function sendQuickChat({ sessionId, question }) {
   try {
-    const response = await fetch(buildUrl("/agent/chat"), {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        id: sessionId,
-        question
-      })
+    return await postJson('/agent/chat', {
+      id: sessionId,
+      question
     });
-
-    if (!response.ok) {
-      throw new Error(`HTTP 错误: ${response.status}`);
-    }
-
-    const payload = await response.json();
-    if (payload?.code !== 200) {
-      throw new Error(payload?.message || "请求失败");
-    }
-
-    return payload?.data || {};
   } catch (error) {
-    throw new Error(getErrorMessage(error, "快速对话失败"));
+    throw new Error(getErrorMessage(error, 'Quick chat failed.'));
   }
 }
 
 export async function streamChat({ sessionId, question, onEvent }) {
   try {
-    const response = await fetch(buildUrl("/agent/chat_stream"), {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "text/event-stream"
-      },
-      body: JSON.stringify({
-        id: sessionId,
-        question
-      })
-    });
-
-    if (!response.ok) {
-      throw new Error(`HTTP 错误: ${response.status}`);
-    }
-
-    await consumeSseResponse(response, async ({ data }) => {
-      const payload = typeof data === "string" ? parseMaybeJson(data) : data;
-      await onEvent?.(payload);
-    });
+    await postStream('/agent/chat_stream', {
+      id: sessionId,
+      question
+    }, onEvent);
   } catch (error) {
-    throw new Error(getErrorMessage(error, "流式对话失败"));
+    throw new Error(getErrorMessage(error, 'Quick chat streaming failed.'));
   }
 }
 
 export async function loadSessionHistory(sessionId) {
   try {
-    const response = await fetch(buildUrl(`/agent/chat/session/${encodeURIComponent(sessionId)}`));
-
-    if (!response.ok) {
-      throw new Error(`HTTP 错误: ${response.status}`);
-    }
-
-    return response.json();
+    return await getJson(`/agent/chat/session/${encodeURIComponent(sessionId)}`);
   } catch (error) {
-    throw new Error(getErrorMessage(error, "加载会话失败"));
+    throw new Error(getErrorMessage(error, 'Failed to load chat session history.'));
   }
 }
 
 export async function clearChatSession(sessionId) {
   try {
-    const response = await fetch(buildUrl("/agent/chat/clear"), {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        sessionId
-      })
+    return await postJson('/agent/chat/clear', {
+      sessionId
     });
-
-    if (!response.ok) {
-      throw new Error(`HTTP 错误: ${response.status}`);
-    }
-
-    return response.json();
   } catch (error) {
-    throw new Error(getErrorMessage(error, "删除会话失败"));
+    throw new Error(getErrorMessage(error, 'Failed to clear chat session.'));
+  }
+}
+
+export async function sendResearchChat({ sessionId, question }) {
+  try {
+    return await postJson('/research/chat', {
+      id: sessionId,
+      question
+    });
+  } catch (error) {
+    throw new Error(getErrorMessage(error, 'Research chat failed.'));
+  }
+}
+
+export async function streamResearchChat({ sessionId, question, onEvent }) {
+  try {
+    await postStream('/research/chat_stream', {
+      id: sessionId,
+      question
+    }, onEvent);
+  } catch (error) {
+    throw new Error(getErrorMessage(error, 'Research streaming failed.'));
+  }
+}
+
+export async function loadResearchSessionHistory(sessionId) {
+  try {
+    return await getJson(`/research/session/${encodeURIComponent(sessionId)}`);
+  } catch (error) {
+    throw new Error(getErrorMessage(error, 'Failed to load research session history.'));
+  }
+}
+
+export async function clearResearchSession(sessionId) {
+  try {
+    return await postJson('/research/clear', {
+      sessionId
+    });
+  } catch (error) {
+    throw new Error(getErrorMessage(error, 'Failed to clear research session.'));
+  }
+}
+
+export async function sendFileChat({ sessionId, question }) {
+  try {
+    return await postJson('/file/chat', {
+      id: sessionId,
+      question
+    });
+  } catch (error) {
+    throw new Error(getErrorMessage(error, 'File chat failed.'));
+  }
+}
+
+export async function streamFileChat({ sessionId, question, onEvent }) {
+  try {
+    await postStream('/file/chat_stream', {
+      id: sessionId,
+      question
+    }, onEvent);
+  } catch (error) {
+    throw new Error(getErrorMessage(error, 'File streaming failed.'));
+  }
+}
+
+export async function loadFileSessionHistory(sessionId) {
+  try {
+    return await getJson(`/file/session/${encodeURIComponent(sessionId)}`);
+  } catch (error) {
+    throw new Error(getErrorMessage(error, 'Failed to load file session history.'));
+  }
+}
+
+export async function clearFileSession(sessionId) {
+  try {
+    return await postJson('/file/clear', {
+      sessionId
+    });
+  } catch (error) {
+    throw new Error(getErrorMessage(error, 'Failed to clear file session.'));
   }
 }
 
 export async function uploadFile(file) {
   try {
     const formData = new FormData();
-    formData.append("file", file);
-
-    const response = await fetch(buildUrl("/file/upload"), {
-      method: "POST",
-      body: formData
-    });
-
-    if (!response.ok) {
-      throw new Error(`HTTP 错误: ${response.status}`);
-    }
-
-    return response.json();
+    formData.append('file', file);
+    return await postFormData('/file/upload', formData);
   } catch (error) {
-    throw new Error(getErrorMessage(error, "文件上传失败"));
+    throw new Error(getErrorMessage(error, 'File upload failed.'));
   }
 }

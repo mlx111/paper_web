@@ -7,7 +7,7 @@
         hidden
         @change="handleChange"
       />
-      <span>上传文件</span>
+      <span>Upload file</span>
     </label>
   </div>
 </template>
@@ -20,13 +20,13 @@ defineProps({
   }
 });
 
-const emit = defineEmits(["upload"]);
+const emit = defineEmits(['upload']);
 
 function handleChange(event) {
   const file = event.target.files?.[0];
   if (file) {
-    emit("upload", file);
+    emit('upload', file);
   }
-  event.target.value = "";
+  event.target.value = '';
 }
 </script>

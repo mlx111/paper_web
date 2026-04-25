@@ -1,4 +1,4 @@
-const STORAGE_KEY = "mypaperweb_chat_histories";
+const STORAGE_PREFIX = 'mypaperweb';
 
 function safeParseJSON(value, fallback) {
   if (!value) {
@@ -12,25 +12,29 @@ function safeParseJSON(value, fallback) {
   }
 }
 
-function createId(prefix = "id") {
+function createId(prefix = 'id') {
   if (window.crypto?.randomUUID) {
-    return `${prefix}_${window.crypto.randomUUID().replace(/-/g, "")}`;
+    return `${prefix}_${window.crypto.randomUUID().replace(/-/g, '')}`;
   }
 
   return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
-export function createSessionId() {
-  return createId("session");
+function getHistoriesStorageKey(moduleName = 'chat') {
+  return `${STORAGE_PREFIX}_${moduleName}_histories`;
+}
+
+export function createSessionId(prefix = 'session') {
+  return createId(prefix);
 }
 
 export function createMessageId() {
-  return createId("message");
+  return createId('message');
 }
 
 export function normalizeMessage(message = {}) {
-  const type = message.type || message.role || "assistant";
-  const content = message.content == null ? "" : String(message.content);
+  const type = message.type || message.role || 'assistant';
+  const content = message.content == null ? '' : String(message.content);
 
   return {
     id: message.id || createMessageId(),
@@ -56,7 +60,7 @@ export function hasMeaningfulMessages(messages = []) {
   }
 
   return messages.some((message) => {
-    const content = message?.content == null ? "" : String(message.content);
+    const content = message?.content == null ? '' : String(message.content);
     return content.trim().length > 0;
   });
 }
@@ -64,15 +68,15 @@ export function hasMeaningfulMessages(messages = []) {
 export function buildChatTitle(messages = []) {
   const normalized = normalizeMessages(messages);
   const userMessage =
-    normalized.find((message) => message.type === "user") ||
+    normalized.find((message) => message.type === 'user') ||
     normalized.find((message) => message.content?.trim());
-  const seed = userMessage?.content?.trim() || "新对话";
-  const compact = seed.replace(/\s+/g, " ");
+  const seed = userMessage?.content?.trim() || 'New chat';
+  const compact = seed.replace(/\s+/g, ' ');
   return compact.length > 24 ? `${compact.slice(0, 24)}...` : compact;
 }
 
-export function loadChatHistories() {
-  const raw = window.localStorage.getItem(STORAGE_KEY);
+export function loadChatHistories(moduleName = 'chat') {
+  const raw = window.localStorage.getItem(getHistoriesStorageKey(moduleName));
   const parsed = safeParseJSON(raw, []);
 
   if (!Array.isArray(parsed)) {
@@ -83,15 +87,15 @@ export function loadChatHistories() {
     .filter((item) => hasMeaningfulMessages(item?.messages || []))
     .map((item) => ({
       id: item?.id || createSessionId(),
-      title: item?.title || "新对话",
+      title: item?.title || 'New chat',
       messages: normalizeMessages(item?.messages || []),
       updatedAt: item?.updatedAt || new Date().toISOString()
     }))
     .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime());
 }
 
-export function saveChatHistories(histories = []) {
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(histories));
+export function saveChatHistories(histories = [], moduleName = 'chat') {
+  window.localStorage.setItem(getHistoriesStorageKey(moduleName), JSON.stringify(histories));
 }
 
 export function upsertChatHistory(histories = [], sessionId, messages = []) {
@@ -112,6 +116,10 @@ export function removeChatHistory(histories = [], sessionId) {
   return histories.filter((history) => history.id !== sessionId);
 }
 
+export function buildModuleSessionId(moduleName = 'chat') {
+  return createSessionId(`${moduleName}_session`);
+}
+
 export function findStoredHistory(histories = [], sessionId) {
   const found = histories.find((history) => history.id === sessionId);
   if (!found) {
@@ -120,7 +128,7 @@ export function findStoredHistory(histories = [], sessionId) {
 
   return {
     id: found.id,
-    title: found.title || "新对话",
+    title: found.title || 'New chat',
     messages: normalizeMessages(found.messages || []),
     updatedAt: found.updatedAt || new Date().toISOString()
   };

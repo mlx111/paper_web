@@ -6,7 +6,7 @@
 
     <div ref="contentRoot" class="message-content">
       <template v-if="message.loading">
-        <span>{{ message.content || "正在思考..." }}</span>
+        <span>{{ message.content || 'Thinking...' }}</span>
       </template>
       <template v-else-if="isAssistantLike">
         <div v-html="renderedHtml"></div>
@@ -19,8 +19,8 @@
 </template>
 
 <script setup>
-import { computed, nextTick, onMounted, onUpdated, ref } from "vue";
-import { highlightCodeBlocks, renderMarkdown } from "../utils/markdown.js";
+import { computed, nextTick, onMounted, onUpdated, ref } from 'vue';
+import { highlightCodeBlocks, renderMarkdown } from '../utils/markdown.js';
 
 const props = defineProps({
   message: {
@@ -30,8 +30,8 @@ const props = defineProps({
 });
 
 const contentRoot = ref(null);
-const isAssistantLike = computed(() => props.message.type === "assistant");
-const renderedHtml = computed(() => renderMarkdown(props.message.content || ""));
+const isAssistantLike = computed(() => props.message.type === 'assistant');
+const renderedHtml = computed(() => renderMarkdown(props.message.content || ''));
 
 function applyHighlight() {
   nextTick(() => {
