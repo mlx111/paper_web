@@ -1,0 +1,346 @@
+[
+    {
+        "id": "router_001",
+        "mode": "router",
+        "question": "帮我总结一下这篇论文的核心贡献",
+        "expected_route": "deep",
+        "expected_tools": [],
+        "expected_keywords": [
+            "核心贡献",
+            "总结",
+            "分析"
+        ],
+        "expected_evidence": [
+            "paper",
+            "summary"
+        ],
+        "expected_answer_type": "analysis",
+        "difficulty": "easy",
+        "must_include": [
+            "分析"
+        ],
+        "must_not_include": [
+            "我不知道"
+        ],
+        "expected_notes_used": false,
+        "expected_context_mode": "router",
+        "description": "测试 router 是否将论文总结类问题分到 deep。"
+    },
+    {
+        "id": "router_002",
+        "mode": "router",
+        "question": "今天北京天气怎么样",
+        "expected_route": "quick",
+        "expected_tools": [
+            "web_search"
+        ],
+        "expected_keywords": [
+            "北京",
+            "天气"
+        ],
+        "expected_evidence": [
+            "search"
+        ],
+        "expected_answer_type": "fact",
+        "difficulty": "easy",
+        "must_include": [
+            "北京"
+        ],
+        "must_not_include": [
+            "长篇分析"
+        ],
+        "expected_notes_used": false,
+        "expected_context_mode": "router",
+        "description": "测试 router 是否将简单事实查询分到 quick。"
+    },
+    {
+        "id": "quick_001",
+        "mode": "quick",
+        "question": "什么是上下文工程？",
+        "expected_route": "quick",
+        "expected_tools": [],
+        "expected_keywords": [
+            "上下文工程",
+            "上下文"
+        ],
+        "expected_evidence": [],
+        "expected_answer_type": "explanation",
+        "difficulty": "easy",
+        "must_include": [
+            "上下文"
+        ],
+        "must_not_include": [
+            "详细推导"
+        ],
+        "expected_notes_used": false,
+        "expected_context_mode": "quick",
+        "description": "测试 quick 是否能简洁解释概念。"
+    },
+    {
+        "id": "quick_002",
+        "mode": "quick",
+        "question": "帮我查一下现在几点了",
+        "expected_route": "quick",
+        "expected_tools": [
+            "get_current_time"
+        ],
+        "expected_keywords": [
+            "时间",
+            "现在"
+        ],
+        "expected_evidence": [
+            "time"
+        ],
+        "expected_answer_type": "fact",
+        "difficulty": "easy",
+        "must_include": [
+            "时间"
+        ],
+        "must_not_include": [
+            "复杂分析"
+        ],
+        "expected_notes_used": false,
+        "expected_context_mode": "quick",
+        "description": "测试 quick 是否调用时间工具。"
+    },
+    {
+        "id": "quick_003",
+        "mode": "quick",
+        "question": "帮我搜索一下 AI 智能体性能评估的常用指标",
+        "expected_route": "quick",
+        "expected_tools": [
+            "web_search"
+        ],
+        "expected_keywords": [
+            "评估",
+            "指标"
+        ],
+        "expected_evidence": [
+            "search"
+        ],
+        "expected_answer_type": "fact",
+        "difficulty": "medium",
+        "must_include": [
+            "指标"
+        ],
+        "must_not_include": [
+            "无关展开"
+        ],
+        "expected_notes_used": false,
+        "expected_context_mode": "quick",
+        "description": "测试 quick 是否能正确使用搜索工具。"
+    },
+    {
+        "id": "deep_001",
+        "mode": "deep",
+        "question": "请对比 ContextBuilder 和传统 RAG 的区别，并说明各自适用场景",
+        "expected_route": "deep",
+        "expected_tools": [],
+        "expected_keywords": [
+            "对比",
+            "适用场景",
+            "区别"
+        ],
+        "expected_evidence": [
+            "context",
+            "rag"
+        ],
+        "expected_answer_type": "analysis",
+        "difficulty": "medium",
+        "must_include": [
+            "适用场景"
+        ],
+        "must_not_include": [
+            "完全一样"
+        ],
+        "expected_notes_used": true,
+        "expected_context_mode": "deep",
+        "description": "测试 deep 是否能做结构化对比分析。"
+    },
+    {
+        "id": "deep_002",
+        "mode": "deep",
+        "question": "如果检索结果很多，但上下文窗口很小，应该怎么设计压缩策略？",
+        "expected_route": "deep",
+        "expected_tools": [],
+        "expected_keywords": [
+            "压缩",
+            "上下文窗口",
+            "设计"
+        ],
+        "expected_evidence": [
+            "compress",
+            "context"
+        ],
+        "expected_answer_type": "analysis",
+        "difficulty": "hard",
+        "must_include": [
+            "压缩策略"
+        ],
+        "must_not_include": [
+            "只保留全部原文"
+        ],
+        "expected_notes_used": true,
+        "expected_context_mode": "deep",
+        "description": "测试 deep 是否理解上下文压缩问题。"
+    },
+    {
+        "id": "deep_003",
+        "mode": "deep",
+        "question": "请解释为什么这个问题应该优先使用检索证据，而不是只靠历史",
+        "expected_route": "deep",
+        "expected_tools": [],
+        "expected_keywords": [
+            "检索证据",
+            "历史"
+        ],
+        "expected_evidence": [
+            "retrieval",
+            "history"
+        ],
+        "expected_answer_type": "analysis",
+        "difficulty": "medium",
+        "must_include": [
+            "检索证据"
+        ],
+        "must_not_include": [
+            "只靠历史就够了"
+        ],
+        "expected_notes_used": false,
+        "expected_context_mode": "deep",
+        "description": "测试 deep 是否能说明检索优先于历史的原因。"
+    },
+    {
+        "id": "deep_004",
+        "mode": "deep",
+        "question": "请根据当前会话中的 notes 和历史，判断我现在更偏向哪种工作流",
+        "expected_route": "deep",
+        "expected_tools": [],
+        "expected_keywords": [
+            "notes",
+            "历史",
+            "工作流"
+        ],
+        "expected_evidence": [
+            "note",
+            "history"
+        ],
+        "expected_answer_type": "analysis",
+        "difficulty": "hard",
+        "must_include": [
+            "工作流"
+        ],
+        "must_not_include": [
+            "完全无法判断"
+        ],
+        "expected_notes_used": true,
+        "expected_context_mode": "deep",
+        "description": "测试 deep 是否能利用 notes 做判断。"
+    },
+    {
+        "id": "tool_001",
+        "mode": "quick",
+        "question": "请查一下今天上海的时间",
+        "expected_route": "quick",
+        "expected_tools": [
+            "get_current_time"
+        ],
+        "expected_keywords": [
+            "上海",
+            "时间"
+        ],
+        "expected_evidence": [
+            "time"
+        ],
+        "expected_answer_type": "fact",
+        "difficulty": "easy",
+        "must_include": [
+            "时间"
+        ],
+        "must_not_include": [
+            "无关信息"
+        ],
+        "expected_notes_used": false,
+        "expected_context_mode": "quick",
+        "description": "测试时间工具调用是否正确。"
+    },
+    {
+        "id": "tool_002",
+        "mode": "deep",
+        "question": "请根据文档内容，列出你认为最重要的三条评估指标，并解释原因",
+        "expected_route": "deep",
+        "expected_tools": [
+            "retrieve_knowledge"
+        ],
+        "expected_keywords": [
+            "评估指标",
+            "原因"
+        ],
+        "expected_evidence": [
+            "retrieval",
+            "document"
+        ],
+        "expected_answer_type": "analysis",
+        "difficulty": "medium",
+        "must_include": [
+            "三条"
+        ],
+        "must_not_include": [
+            "没有依据"
+        ],
+        "expected_notes_used": false,
+        "expected_context_mode": "deep",
+        "description": "测试知识检索是否真的参与回答。"
+    },
+    {
+        "id": "notes_001",
+        "mode": "deep",
+        "question": "根据当前 notes，项目里上下文工程的重点是什么",
+        "expected_route": "deep",
+        "expected_tools": [],
+        "expected_keywords": [
+            "上下文工程",
+            "重点"
+        ],
+        "expected_evidence": [
+            "note"
+        ],
+        "expected_answer_type": "analysis",
+        "difficulty": "medium",
+        "must_include": [
+            "重点"
+        ],
+        "must_not_include": [
+            "没有 notes"
+        ],
+        "expected_notes_used": true,
+        "expected_context_mode": "deep",
+        "description": "测试 deep 是否能从 notes 中提取关键信息。"
+    },
+    {
+        "id": "notes_002",
+        "mode": "deep",
+        "question": "请总结一下当前项目里已经确认的设计约束",
+        "expected_route": "deep",
+        "expected_tools": [],
+        "expected_keywords": [
+            "设计约束",
+            "确认"
+        ],
+        "expected_evidence": [
+            "note",
+            "constraint"
+        ],
+        "expected_answer_type": "analysis",
+        "difficulty": "hard",
+        "must_include": [
+            "约束"
+        ],
+        "must_not_include": [
+            "随机猜测"
+        ],
+        "expected_notes_used": true,
+        "expected_context_mode": "deep",
+        "description": "测试 deep 是否会利用约束类笔记。"
+    }
+]
