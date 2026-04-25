@@ -14,6 +14,10 @@ export default defineConfig({
       "/file": {
         target: "http://127.0.0.1:8080",
         changeOrigin: true
+      },
+      "/research": {
+        target: "http://127.0.0.1:8080",
+        changeOrigin: true
       }
     }
   }
