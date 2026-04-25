@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+import re
 import traceback
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -14,6 +15,7 @@ from context.context_config import ContextConfig
 from models.factory import qwen_model
 from settings.config import config
 from utils.history import get_history
+from utils.notes import save_high_value_note
 from utils.rag_utils import rag_utils_service
 
 
@@ -41,13 +43,14 @@ class BaseAgentService(ABC):
     context_max_evidence_items: int = 6
     context_max_chars: int = 12000
 
-    def __init__(self, streaming: bool = False):
+    def __init__(self, streaming: bool = False, history_loader=None):
         self.model_name = config.rag_model
         self.streaming = streaming
         self.prompt_dir = Path(__file__).resolve().parent.parent / "prompt"
         self.system_prompt_file = self.get_system_prompt_file()
         self.system_prompt = self._build_system_prompt()
 
+        self.history_loader = history_loader or get_history
         self.store = InMemoryStore()
         self.model = qwen_model.init_model(streaming)
 
@@ -132,7 +135,7 @@ class BaseAgentService(ABC):
         这样 quick / deep / router 都可以共用同一套上下文工程。
         """
         return ContextBuilder(
-            history_loader=get_history,
+            history_loader=self.history_loader,
             knowledge_retriever=self._retrieve_context_documents,
             parent_chunk_retriever=None,
             notes_loader=self._retrieve_context_notes,
@@ -141,7 +144,7 @@ class BaseAgentService(ABC):
         )
 
     def _history(self, session_id: str):
-        return get_history(session_id)
+        return self.history_loader(session_id)
 
     def _history_messages(self, session_id: str):
         return [msg for msg in self._history(session_id).messages if not isinstance(msg, SystemMessage)]
@@ -152,6 +155,177 @@ class BaseAgentService(ABC):
         if answer:
             payload.append(AIMessage(content=answer))
         history.add_messages(payload)
+
+    def _normalize_text(self, value: str) -> str:
+        return re.sub(r"\s+", " ", (value or "").strip())
+
+    def _shorten_text(self, value: str, limit: int) -> str:
+        text = self._normalize_text(value)
+        if len(text) <= limit:
+            return text
+        return text[: max(0, limit - 3)].rstrip() + "..."
+
+    def _extract_memory_note(self, session_id: str, question: str, answer: str) -> dict[str, Any] | None:
+        """
+        Extract a conservative memory candidate from a completed answer.
+
+        Only high-signal content should survive this gate.
+        """
+        question_text = self._normalize_text(question)
+        answer_text = self._normalize_text(answer)
+        if not answer_text:
+            return None
+
+        combined = f"{question_text} {answer_text}".lower()
+
+        rule_set: list[tuple[str, tuple[str, ...], float]] = [
+            (
+                "constraint",
+                (
+                    "must not",
+                    "must ",
+                    "never",
+                    "cannot",
+                    "can't",
+                    "avoid",
+                    "limit",
+                    "constraint",
+                    "required",
+                    "require",
+                    "do not",
+                    "don't",
+                ),
+                0.92,
+            ),
+            (
+                "decision",
+                (
+                    "recommend",
+                    "should",
+                    "best",
+                    "choose",
+                    "decide",
+                    "decision",
+                    "prefer",
+                ),
+                0.88,
+            ),
+            (
+                "preference",
+                (
+                    "prefer",
+                    "like",
+                    "favorite",
+                    "favourite",
+                    "want",
+                    "rather",
+                ),
+                0.84,
+            ),
+            (
+                "blocker",
+                (
+                    "blocked",
+                    "problem",
+                    "issue",
+                    "risk",
+                    "bug",
+                    "failure",
+                    "error",
+                ),
+                0.8,
+            ),
+            (
+                "summary",
+                (
+                    "in summary",
+                    "to sum up",
+                    "overall",
+                    "key point",
+                    "key points",
+                    "summary",
+                ),
+                0.76,
+            ),
+            (
+                "memory",
+                (
+                    "remember",
+                    "keep in mind",
+                    "note that",
+                    "long-term",
+                    "for later",
+                ),
+                0.82,
+            ),
+        ]
+
+        kind = None
+        importance = 0.0
+        for candidate_kind, patterns, candidate_importance in rule_set:
+            if any(pattern in combined for pattern in patterns):
+                kind = candidate_kind
+                importance = candidate_importance
+                break
+
+        if kind is None:
+            if len(answer_text) >= 220 and any(token in combined for token in ("important", "key", "crucial", "stable", "always", "must")):
+                kind = "summary"
+                importance = 0.7
+            else:
+                return None
+
+        title_source = question_text or answer_text
+        title = f"{kind}: {self._shorten_text(title_source, 72)}"
+        content = self._shorten_text(
+            f"Question: {question_text}\nAnswer: {answer_text}",
+            1200,
+        )
+
+        return {
+            "title": title,
+            "content": content,
+            "kind": kind,
+            "importance": importance,
+            "tags": [kind, self.context_mode],
+            "extra": {
+                "source": "agent_memory",
+                "session_id": session_id,
+                "question_preview": self._shorten_text(question_text, 160),
+                "answer_preview": self._shorten_text(answer_text, 240),
+                "reason": kind,
+            },
+        }
+
+    def _persist_memory(self, session_id: str, question: str, answer: str) -> None:
+        """
+        Persist a high-value memory note when the response looks reusable.
+        """
+        if not answer:
+            return
+
+        memory_note = self._extract_memory_note(session_id, question, answer)
+        if memory_note is None:
+            return
+
+        saved = save_high_value_note(
+            session_id=session_id,
+            title=memory_note["title"],
+            content=memory_note["content"],
+            tags=memory_note["tags"],
+            kind=memory_note["kind"],
+            importance=memory_note["importance"],
+            source="agent_memory",
+            extra=memory_note["extra"],
+        )
+        if saved is not None:
+            logger.info(
+                "{} 记忆写入完成，会话: {}，kind: {}，title: {}",
+                self.__class__.__name__,
+                session_id,
+                memory_note["kind"],
+                memory_note["title"],
+            )
 
     def build_context_bundle(self, question: str, session_id: str):
         """
@@ -208,7 +382,8 @@ class BaseAgentService(ABC):
                 bundle.mode,
                 bundle.routing_hints,
             )
-
+            # 加在这里
+            
             result = await self.agent.ainvoke(input={"messages": messages})
 
             messages_result = result.get("messages", [])
@@ -225,6 +400,7 @@ class BaseAgentService(ABC):
 
             if answer:
                 self._save_turn(session_id, question, answer)
+                self._persist_memory(session_id, question, answer)
 
             logger.info("{} 对话完成，会话: {}", self.__class__.__name__, session_id)
             return answer
@@ -249,6 +425,18 @@ class BaseAgentService(ABC):
                 bundle.mode,
                 bundle.routing_hints,
             )
+
+            # 先把上下文元信息吐给外层评估器。
+            # 这样 runner 可以准确知道这次请求用了什么 context_mode，
+            # 以及 context 里到底有没有 notes / history / evidence。
+            yield {
+                "type": "context",
+                "data": {
+                    "context_mode": bundle.mode,
+                    "routing_hints": bundle.routing_hints,
+                    "trace": bundle.trace,
+                },
+            }
 
             answer_parts: list[str] = []
 
@@ -282,6 +470,7 @@ class BaseAgentService(ABC):
             final_answer = "".join(answer_parts).strip()
             if final_answer:
                 self._save_turn(session_id, question, final_answer)
+                self._persist_memory(session_id, question, final_answer)
 
             logger.info("{} 流式对话完成，会话: {}", self.__class__.__name__, session_id)
             yield {"type": "complete"}

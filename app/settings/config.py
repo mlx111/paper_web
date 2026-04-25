@@ -5,7 +5,34 @@ from pathlib import Path
 from typing import Any, Dict
 import os
 
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    def load_dotenv(dotenv_path=None, override=False):  # type: ignore[override]
+        """
+        Lightweight fallback loader so the app can run without python-dotenv.
+        """
+        if dotenv_path is None:
+            return False
+
+        path = Path(dotenv_path)
+        if not path.exists():
+            return False
+
+        loaded = False
+        for raw_line in path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            if not key:
+                continue
+            if override or key not in os.environ:
+                os.environ[key] = value
+                loaded = True
+        return loaded
 
 
 load_dotenv(Path(__file__).resolve().parent.parent.parent / ".env", override=False)

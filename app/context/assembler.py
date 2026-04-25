@@ -147,6 +147,9 @@ class ContextAssembler:
             )
 
         final_context = self._truncate("\n".join(sections).strip())
+        note_count = 0
+        if candidates:
+            note_count = sum(1 for item in candidates if getattr(item, "source", "") == "note")
 
         return ContextBundle(
             question=question,
@@ -162,11 +165,13 @@ class ContextAssembler:
                 f"evidence_count={len(evidence)}",
                 f"packet_count={len(packets)}",
                 f"mode={mode}",
+                f"note_count={note_count}",
             ],
             trace={
                 "history_turns_used": min(len(history), self.config.max_history_turns),
                 "evidence_items_used": min(len(evidence), self.config.max_evidence_items),
                 "packet_items_used": len(packets),
+                "note_count": note_count,
                 "final_chars": len(final_context),
             },
         )

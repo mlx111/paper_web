@@ -10,6 +10,7 @@ from langchain.chat_models import init_chat_model
 from langchain_core.documents import Document
 from loguru import logger
 
+from context.context_config import ContextConfig
 from services.embodeding_service import Embodedings
 from services.mlivus_client_service import MilvusManager
 from services.parent_chunk_service import ParentChunkStore
@@ -53,10 +54,19 @@ class RagUtilsService:
             knowledge_retriever=self._retrieve_context_documents,
             parent_chunk_retriever=None,
             rerank_fn=None,
-            max_history_messages=12,
-            max_history_turns=6,
-            max_evidence_items=6,
-            max_chars=12000,
+            config=ContextConfig(
+                max_tokens=3000,
+                reserve_ratio=0.2,
+                min_relevance=0.1,
+                enable_compression=True,
+                recency_weight=0.3,
+                relevance_weight=0.7,
+                max_history_messages=12,
+                max_history_turns=6,
+                max_evidence_items=6,
+                max_note_items=4,
+                max_chars=12000,
+            ),
         )
 
     def _retrieve_context_documents(self, query: str, top_k: int):

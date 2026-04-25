@@ -9,7 +9,11 @@ from loguru import logger
 from pydantic import BaseModel, Field
 
 from agents.Base_agent_service import BaseAgentService
+from context.builder import ContextBuilder
+from context.context_config import ContextConfig
 from utils.rag_utils import rag_utils_service
+from utils.history import get_history
+from utils.notes import get_router_notes
 
 
 class RouterDecision(BaseModel):
@@ -22,7 +26,7 @@ class RouterAgentService(BaseAgentService):
     def __init__(self, streaming: bool = False):
         super().__init__(streaming=streaming)
 
-        '''# Router 不需要太长的上下文，只保留最近历史和少量证据即可。
+        # Router 不需要太长的上下文，只保留最近历史和少量证据即可。
         # 这里用 ContextBuilder 先把“历史 + 检索结果”整理好，
         # 再交给 router agent 判断应该走 quick 还是 deep。
         self.context_builder = ContextBuilder(
@@ -30,7 +34,7 @@ class RouterAgentService(BaseAgentService):
             knowledge_retriever=self._retrieve_context_documents,
             parent_chunk_retriever=None,
             rerank_fn=None,
-            notes_loader=get_notes,
+            notes_loader=get_router_notes,
             config=ContextConfig(
                 max_tokens=3000,
                 reserve_ratio=0.2,
@@ -38,13 +42,13 @@ class RouterAgentService(BaseAgentService):
                 enable_compression=True,
                 recency_weight=0.3,
                 relevance_weight=0.7,
-                max_history_messages=12,
-                max_history_turns=4,
-                max_evidence_items=4,
-                max_chars=6000,
-
+                max_history_messages=8,
+                max_history_turns=3,
+                max_evidence_items=3,
+                max_note_items=2,
+                max_chars=5000,
             ),
-        )'''
+        )
 
 
     
