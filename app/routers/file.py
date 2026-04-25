@@ -1,43 +1,39 @@
-"""文件上传接口模块"""
+"""File module API routes.
 
+This router handles both file uploads and file-based Q&A powered by deep_agent.
+"""
+
+import json
 from pathlib import Path
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
-
-from services.vector_index_service import vector_index_service
 from loguru import logger
+from sse_starlette.sse import EventSourceResponse
+
+from agents.file_agent_service import file_agent_service
+from models.request import ChatRequest, ClearRequest
+from models.response import ApiResponse, SessionInfoResponse
+from services.vector_index_service import vector_index_service
+
+
 router = APIRouter(prefix="/file", tags=["文件接口"])
 
-# 文件上传后存储的路径
+# File upload storage directory
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 UPLOAD_DIR = PROJECT_ROOT / "uploads"
-# 支持的文件类型
-ALLOWED_EXTENSIONS = ["txt", "md","pdf", "doc", "docx", "xls", "xlsx"]
-# 单个文件支持最大大小
+ALLOWED_EXTENSIONS = ["txt", "md", "pdf", "doc", "docx", "xls", "xlsx"]
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
 
 
 @router.post("/upload")
 async def upload_file(file: UploadFile = File(...)):
-    """
-    上传文件并自动创建向量索引
-
-    Args:
-        file: 上传的文件
-
-    Returns:
-        JSONResponse: 上传结果
-    """
+    """Upload a file and index it into the vector store."""
     try:
-        # 1. 验证文件
         if not file.filename:
             raise HTTPException(status_code=400, detail="文件名不能为空")
 
-        # 2. 规范化文件名（去除空格，处理 Windows 上传的文件）
         safe_filename = _sanitize_filename(file.filename)
-
-        # 3. 验证文件扩展名
         file_extension = _get_file_extension(safe_filename)
         if file_extension not in ALLOWED_EXTENSIONS:
             raise HTTPException(
@@ -45,39 +41,30 @@ async def upload_file(file: UploadFile = File(...)):
                 detail=f"不支持的文件格式，仅支持: {', '.join(ALLOWED_EXTENSIONS)}",
             )
 
-        # 4. 创建上传目录
         UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-
-        # 5. 保存文件
         file_path = UPLOAD_DIR / safe_filename
-
-        # 如果文件已存在，先删除旧文件（实现覆盖更新）
         if file_path.exists():
-            logger.info(f"文件已存在，将覆盖: {file_path}")
+            logger.info(f"文件已存在，覆盖: {file_path}")
             file_path.unlink()
 
-        # 读取并保存文件内容
         content = await file.read()
-
-        # 验证文件大小
         if len(content) > MAX_FILE_SIZE:
-            raise HTTPException(status_code=400, detail=f"文件大小超过限制（最大 {MAX_FILE_SIZE} 字节）")
+            raise HTTPException(
+                status_code=400,
+                detail=f"文件大小超过限制（最大 {MAX_FILE_SIZE} 字节）",
+            )
 
         file_path.write_bytes(content)
-
         logger.info(f"文件上传成功: {file_path}")
 
-        # 5. 自动创建向量索引
         try:
             logger.info(f"开始为上传文件创建向量索引: {file_path}")
             vector_index_service.index_single_file(str(file_path))
             logger.info(f"向量索引创建成功: {file_path}")
-        except Exception as e:
-            logger.error(f"向量索引创建失败: {file_path}, 错误: {e}")
-            raise HTTPException(status_code=500, detail=f"文件上传成功，但索引创建失败: {e}")
-            # 注意：即使索引失败，文件上传仍然成功，只是记录错误日志
+        except Exception as exc:
+            logger.error(f"向量索引创建失败: {file_path}, 错误: {exc}")
+            raise HTTPException(status_code=500, detail=f"文件上传成功，但索引创建失败: {exc}")
 
-        # 6. 返回响应
         return JSONResponse(
             status_code=200,
             content={
@@ -93,28 +80,17 @@ async def upload_file(file: UploadFile = File(...)):
 
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error(f"文件上传失败: {e}")
-        raise HTTPException(status_code=500, detail=f"文件上传失败: {e}")
+    except Exception as exc:
+        logger.error(f"文件上传失败: {exc}")
+        raise HTTPException(status_code=500, detail=f"文件上传失败: {exc}")
 
 
 @router.post("/index_directory")
 async def index_directory(directory_path: str = None):
-    """
-    索引指定目录下的所有文件
-
-    Args:
-        directory_path: 目录路径（可选，默认使用 uploads 目录）
-
-    Returns:
-        JSONResponse: 索引结果
-    """
+    """Index all files under a given directory."""
     try:
         logger.info(f"开始索引目录: {directory_path or 'uploads'}")
-
-        # 执行索引
         result = vector_index_service.index_directory(directory_path)
-
         return JSONResponse(
             status_code=200,
             content={
@@ -123,23 +99,162 @@ async def index_directory(directory_path: str = None):
                 "data": result.to_dict(),
             },
         )
+    except Exception as exc:
+        logger.error(f"索引目录失败: {exc}")
+        raise HTTPException(status_code=500, detail=f"索引目录失败: {exc}")
 
-    except Exception as e:
-        logger.error(f"索引目录失败: {e}")
-        raise HTTPException(status_code=500, detail=f"索引目录失败: {e}")
+
+@router.post("/chat")
+async def chat(request: ChatRequest):
+    """File module chat entry point powered by deep_agent."""
+    try:
+        logger.info(f"[file {request.id}] 收到文件问答请求: {request.question}")
+        answer = await file_agent_service.query(request.question, session_id=request.id)
+        return {
+            "code": 200,
+            "message": "success",
+            "data": {
+                "success": True,
+                "answer": answer,
+                "errorMessage": None,
+            },
+        }
+    except Exception as exc:
+        logger.error(f"[file {request.id}] 文件问答失败: {exc}")
+        return {
+            "code": 500,
+            "message": "error",
+            "data": {
+                "success": False,
+                "answer": None,
+                "errorMessage": str(exc),
+            },
+        }
+
+
+@router.post("/chat_stream")
+async def chat_stream(request: ChatRequest):
+    """Streaming file-module chat entry point."""
+    logger.info(f"[file {request.id}] 收到流式文件问答请求: {request.question}")
+
+    async def event_generator():
+        try:
+            async for chunk in file_agent_service.query_stream(request.question, session_id=request.id):
+                chunk_type = chunk.get("type", "unknown")
+                chunk_data = chunk.get("data", None)
+
+                if chunk_type == "debug":
+                    yield {
+                        "event": "message",
+                        "data": json.dumps(
+                            {
+                                "type": "debug",
+                                "node": chunk.get("node", "unknown"),
+                                "message_type": chunk.get("message_type", "unknown"),
+                                "data": chunk_data,
+                            },
+                            ensure_ascii=False,
+                        ),
+                    }
+                elif chunk_type == "tool_call":
+                    yield {
+                        "event": "message",
+                        "data": json.dumps(
+                            {
+                                "type": "tool_call",
+                                "node": chunk.get("node", "unknown"),
+                                "data": chunk_data,
+                            },
+                            ensure_ascii=False,
+                        ),
+                    }
+                elif chunk_type == "search_results":
+                    yield {
+                        "event": "message",
+                        "data": json.dumps(
+                            {
+                                "type": "search_results",
+                                "node": chunk.get("node", "unknown"),
+                                "data": chunk_data,
+                            },
+                            ensure_ascii=False,
+                        ),
+                    }
+                elif chunk_type == "content":
+                    yield {
+                        "event": "message",
+                        "data": json.dumps(
+                            {
+                                "type": "content",
+                                "node": chunk.get("node", "unknown"),
+                                "data": chunk_data,
+                            },
+                            ensure_ascii=False,
+                        ),
+                    }
+                elif chunk_type == "complete":
+                    yield {
+                        "event": "message",
+                        "data": json.dumps(
+                            {
+                                "type": "done",
+                                "data": chunk_data,
+                            },
+                            ensure_ascii=False,
+                        ),
+                    }
+                elif chunk_type == "error":
+                    yield {
+                        "event": "message",
+                        "data": json.dumps(
+                            {
+                                "type": "error",
+                                "data": str(chunk_data),
+                            },
+                            ensure_ascii=False,
+                        ),
+                    }
+        except Exception as exc:
+            logger.error(f"[file {request.id}] 流式文件问答失败: {exc}")
+            yield {
+                "event": "message",
+                "data": json.dumps({"type": "error", "data": str(exc)}, ensure_ascii=False),
+            }
+
+    return EventSourceResponse(event_generator())
+
+
+@router.post("/clear", response_model=ApiResponse)
+async def clear_session(request: ClearRequest):
+    """Clear file-module session history."""
+    try:
+        success = file_agent_service.clear_session(request.session_id)
+        return ApiResponse(
+            status="success" if success else "error",
+            message="文件会话已清空" if success else "清空文件会话失败",
+            data=None,
+        )
+    except Exception as exc:
+        logger.error(f"[file {request.session_id}] 清空失败: {exc}")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/session/{session_id}", response_model=SessionInfoResponse)
+async def get_session_info(session_id: str) -> SessionInfoResponse:
+    """Return the isolated history for a file session."""
+    try:
+        history = file_agent_service.get_session_history(session_id)
+        return SessionInfoResponse(
+            session_id=session_id,
+            message_count=len(history),
+            history=history,
+        )
+    except Exception as exc:
+        logger.error(f"[file {session_id}] 获取会话失败: {exc}")
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 def _get_file_extension(filename: str) -> str:
-    """
-    获取文件扩展名
-
-    Args:
-        filename: 文件名
-
-    Returns:
-        str: 扩展名（小写，不含点）
-    """
-    #按. 分成两部分，取后面部分作为扩展名
     parts = filename.rsplit(".", 1)
     if len(parts) == 2:
         return parts[1].lower()
@@ -147,18 +262,7 @@ def _get_file_extension(filename: str) -> str:
 
 
 def _sanitize_filename(filename: str) -> str:
-    """
-    规范化文件名，去除空格和特殊字符
-
-    Args:
-        filename: 原始文件名
-
-    Returns:
-        str: 规范化后的文件名
-    """
-    # 去除空格
     sanitized = filename.replace(" ", "_")
-    # 去除其他可能导致问题的字符
     for char in ['\\', '/', ':', '*', '?', '"', '<', '>', '|']:
         sanitized = sanitized.replace(char, "_")
     return sanitized
