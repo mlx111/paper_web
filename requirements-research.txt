@@ -1,0 +1,11 @@
+# Minimal runtime dependencies for the standalone research workflow.
+# Install these in the project virtual environment before running the app.
+
+langchain-core
+langgraph
+langchain-qwq
+pydantic
+loguru
+pdfplumber
+urllib3
+python-dotenv
