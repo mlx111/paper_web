@@ -31,6 +31,7 @@ chat_history/
 volumes/
 app/data/*.json
 app/data/notes/
+app/data/images/
 
 # Logs
 *.log

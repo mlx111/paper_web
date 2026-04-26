@@ -39,5 +39,8 @@ urllib3
 pypdf
 pdfplumber
 docx2txt
+python-docx
+PyMuPDF
+Pillow
 unstructured
 openpyxl
