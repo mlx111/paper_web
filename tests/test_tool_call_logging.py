@@ -72,6 +72,41 @@ class ToolCallLoggingTest(unittest.TestCase):
             ["web_search", "get_current_time"],
         )
 
+    def test_extracts_memory_note_from_chinese_preference(self):
+        service = _TestAgentService.__new__(_TestAgentService)
+        service.context_mode = "deep"
+
+        note = service._extract_memory_note(
+            "session-1",
+            "请记住：以后回答论文问题时，我偏好中文总结。",
+            "好的，我会记住这个偏好，以后优先使用中文总结。",
+        )
+
+        self.assertIsNotNone(note)
+        self.assertEqual(note["kind"], "preference")
+        self.assertGreaterEqual(note["importance"], 0.8)
+
+    def test_extracts_memory_note_from_chinese_constraint(self):
+        service = _TestAgentService.__new__(_TestAgentService)
+        service.context_mode = "deep"
+
+        note = service._extract_memory_note(
+            "session-1",
+            "以后必须先总结结论，不要直接堆代码。",
+            "明白，以后必须先总结结论，不要直接堆代码。",
+        )
+
+        self.assertIsNotNone(note)
+        self.assertEqual(note["kind"], "constraint")
+
+
+class _TestAgentService(BaseAgentService):
+    def get_system_prompt_file(self) -> str:
+        return "unused.txt"
+
+    def build_agent(self):
+        return None
+
 
 if __name__ == "__main__":
     unittest.main()
