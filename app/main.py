@@ -8,6 +8,7 @@ from routers.auth import router as auth_router
 from routers.agent import router as agent_router
 from routers.elasticsearch import router as elasticsearch_router
 from routers.file import router as file_router
+from routers.health import router as health_router
 from routers.research import router as research_router
 from loguru import logger
 from settings.config import config
@@ -73,6 +74,7 @@ app.include_router(auth_router)
 app.include_router(agent_router)
 app.include_router(elasticsearch_router)
 app.include_router(file_router)
+app.include_router(health_router)
 app.include_router(research_router)
 
 if __name__ == "__main__":
