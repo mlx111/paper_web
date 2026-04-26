@@ -19,8 +19,27 @@ marked.setOptions({
   gfm: true
 });
 
-export function renderMarkdown(content) {
-  return marked.parse(content || "");
+const IMAGE_PLACEHOLDER_RE = /<<IMAGE:[0-9a-fA-F]{8}>>/g;
+
+function escapeMarkdownUrl(value) {
+  return String(value || "").replace(/[)\s]/g, (match) => encodeURIComponent(match));
+}
+
+export function replaceImagePlaceholders(content, imageMap = {}) {
+  let result = String(content || "");
+  const validMap = imageMap && typeof imageMap === "object" ? imageMap : {};
+  result = result.replace(IMAGE_PLACEHOLDER_RE, (placeholder) => {
+    const url = validMap[placeholder];
+    if (!url) {
+      return "";
+    }
+    return `\n![文档图片](${escapeMarkdownUrl(url)})\n`;
+  });
+  return result;
+}
+
+export function renderMarkdown(content, imageMap = {}) {
+  return marked.parse(replaceImagePlaceholders(content || "", imageMap));
 }
 
 export function highlightCodeBlocks(container) {

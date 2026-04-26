@@ -213,6 +213,8 @@ function appendMessage(payload, moduleKey = activeModule.value) {
     timestamp: payload?.timestamp || new Date().toISOString(),
     loading: Boolean(payload?.loading),
     streaming: Boolean(payload?.streaming),
+    imageMap: payload?.imageMap || payload?.image_map || {},
+    sources: Array.isArray(payload?.sources) ? payload.sources : [],
   });
   state.currentMessages.push(message);
   return message.id;
@@ -331,6 +333,8 @@ async function sendQuickMessage(question) {
     const answer = response?.answer || '(no answer)';
     updateMessage(loadingId, {
       content: answer,
+      imageMap: response?.image_map || response?.imageMap || {},
+      sources: response?.sources || [],
       loading: false,
       streaming: false,
     });
@@ -354,6 +358,8 @@ async function sendStreamingMessage(question) {
   });
 
   let fullResponse = '';
+  let imageMap = {};
+  let sources = [];
 
   try {
     await currentModule.value.sendStream({
@@ -375,9 +381,13 @@ async function sendStreamingMessage(question) {
 
         if (payload.type === 'done' || payload.type === 'complete') {
           const answer = payload.data?.answer || fullResponse || '(no answer)';
+          imageMap = payload.data?.image_map || payload.data?.imageMap || imageMap;
+          sources = payload.data?.sources || sources;
           fullResponse = answer;
           updateMessage(assistantId, {
             content: answer,
+            imageMap,
+            sources,
             streaming: false,
           });
           return;
@@ -391,6 +401,8 @@ async function sendStreamingMessage(question) {
 
     updateMessage(assistantId, {
       content: fullResponse || '(no answer)',
+      imageMap,
+      sources,
       streaming: false,
     });
     persistConversation();

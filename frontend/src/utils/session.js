@@ -42,7 +42,9 @@ export function normalizeMessage(message = {}) {
     content,
     timestamp: message.timestamp || new Date().toISOString(),
     loading: Boolean(message.loading),
-    streaming: Boolean(message.streaming)
+    streaming: Boolean(message.streaming),
+    imageMap: message.imageMap || message.image_map || {},
+    sources: Array.isArray(message.sources) ? message.sources : []
   };
 }
 

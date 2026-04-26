@@ -289,6 +289,76 @@ input {
   background: #0f172a;
 }
 
+.message-content img {
+  display: block;
+  max-width: min(520px, 100%);
+  max-height: 420px;
+  margin: 10px 0;
+  border-radius: 8px;
+  border: 1px solid #dfe7f2;
+  object-fit: contain;
+}
+
+.message-sources {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid #e2e9f3;
+}
+
+.message-sources-title {
+  margin-bottom: 8px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #536175;
+}
+
+.message-source-list {
+  display: grid;
+  gap: 8px;
+}
+
+.message-source-item {
+  padding: 9px 10px;
+  border: 1px solid #dfe7f2;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.message-source-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.message-source-file {
+  min-width: 0;
+  overflow: hidden;
+  color: #26364f;
+  font-size: 13px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.message-source-page {
+  flex: 0 0 auto;
+  color: #6c7a8e;
+  font-size: 12px;
+}
+
+.message-source-preview {
+  display: -webkit-box;
+  margin-top: 6px;
+  overflow: hidden;
+  color: #657386;
+  font-size: 12px;
+  line-height: 1.5;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
 .chat-input-container {
   position: absolute;
   left: 0;
