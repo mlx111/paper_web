@@ -2,6 +2,7 @@ from langchain_core.documents import Document
 from loguru import logger
 
 from services.embodeding_service import Embodedings
+from services.chunk_image_store_service import strip_image_placeholders
 from services.mlivus_client_service import MilvusManager
 
 
@@ -22,13 +23,13 @@ class MlivusServerService:
 
         self.milvus_manager.init_collection()
         start_time = time.time()
-        all_texts = [doc.page_content for doc in documents]
+        all_texts = [strip_image_placeholders(doc.page_content) or doc.page_content for doc in documents]
         self.embedding_service.fit_corpus(all_texts)
 
         total = len(documents)
         for i in range(0, total, batch_size):
             batch = documents[i:i + batch_size]
-            texts = [doc.page_content for doc in batch]
+            texts = [strip_image_placeholders(doc.page_content) or doc.page_content for doc in batch]
             dense_embeddings, sparse_embeddings = self.embedding_service.get_all_embeddings(texts)
 
             insert_data = [

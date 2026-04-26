@@ -7,6 +7,8 @@ from typing import Any, Dict, Optional
 from loguru import logger
 
 from services.document_splitter_service import document_splitter_service
+from services.chunk_image_store_service import extract_image_placeholders
+from services.document_image_parser_service import document_image_parser_service
 from services.index_manifest_service import index_manifest_service
 from services.mlivus_server_service import mlivus_server_service
 from services.parent_chunk_service import parent_chunk_store
@@ -76,6 +78,28 @@ class VectorIndexService:
     def _file_state(self, path: Path) -> tuple[int, int]:
         stat = path.stat()
         return stat.st_size, stat.st_mtime_ns
+
+    def _split_file_for_index(self, normalized_path: str):
+        path = Path(normalized_path)
+        if path.suffix.lower() in {".pdf", ".docx"}:
+            try:
+                image_docs = document_image_parser_service.parse(normalized_path, path.name)
+                has_images = any(
+                    extract_image_placeholders(doc.page_content or "")
+                    for doc in image_docs
+                )
+                if has_images:
+                    logger.info(
+                        "图文解析命中图片，占位符分块数: {}，文件: {}",
+                        len(image_docs),
+                        normalized_path,
+                    )
+                    return image_docs
+                logger.info("图文解析未发现图片，回退普通解析: {}", normalized_path)
+            except Exception as exc:
+                logger.warning("图文解析失败，回退普通解析: {}，错误: {}", normalized_path, exc)
+
+        return document_splitter_service.split_document(normalized_path)
 
     def index_directory(self, directory_path: Optional[str] = None) -> IndexingResult:
         result = IndexingResult()
@@ -206,7 +230,7 @@ class VectorIndexService:
         logger.info("开始索引文件: {}", path)
         try:
             normalized_path = path.as_posix()
-            documents = document_splitter_service.split_document(normalized_path)
+            documents = self._split_file_for_index(normalized_path)
             logger.info("文档切分完成: {} -> {} 个分片", file_path, len(documents))
 
             if documents:

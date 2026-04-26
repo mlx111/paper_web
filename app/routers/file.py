@@ -7,14 +7,16 @@ import json
 from pathlib import Path
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from loguru import logger
 from sse_starlette.sse import EventSourceResponse
 
 from agents.file_agent_service import file_agent_service
 from models.request import ChatRequest, ClearRequest
 from models.response import ApiResponse, SessionInfoResponse
+from services.chunk_image_store_service import default_chunk_image_store
 from services.vector_index_service import vector_index_service
+from utils.rag_utils import rag_utils_service
 
 
 router = APIRouter(prefix="/file", tags=["文件接口"])
@@ -24,6 +26,46 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 UPLOAD_DIR = PROJECT_ROOT / "uploads"
 ALLOWED_EXTENSIONS = ["txt", "md", "pdf", "doc", "docx", "xls", "xlsx"]
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
+
+
+def _format_source_doc(doc) -> dict:
+    metadata = getattr(doc, "metadata", {}) or {}
+    preview = (getattr(doc, "page_content", "") or "").strip()
+    if len(preview) > 240:
+        preview = preview[:240].rstrip() + "..."
+
+    score = metadata.get("rerank_score", metadata.get("score"))
+    try:
+        score = round(float(score), 4) if score is not None else None
+    except (TypeError, ValueError):
+        score = None
+
+    return {
+        "filename": metadata.get("filename") or metadata.get("_file_name") or "未知文件",
+        "page_number": metadata.get("page_number"),
+        "chunk_id": metadata.get("chunk_id") or "",
+        "score": score,
+        "preview": preview,
+    }
+
+
+def _build_file_sources(question: str, top_k: int = 3) -> list[dict]:
+    try:
+        retrieved = rag_utils_service.retrieve_documents(question, top_k=top_k)
+        docs = retrieved.get("docs", []) if isinstance(retrieved, dict) else []
+        sources: list[dict] = []
+        seen: set[str] = set()
+        for doc in docs:
+            source = _format_source_doc(doc)
+            key = source.get("chunk_id") or f"{source.get('filename')}:{source.get('page_number')}:{source.get('preview')}"
+            if key in seen:
+                continue
+            seen.add(key)
+            sources.append(source)
+        return sources
+    except Exception as exc:
+        logger.warning("文件问答 sources 构建失败: {}", exc)
+        return []
 
 
 @router.post("/upload")
@@ -110,12 +152,16 @@ async def chat(request: ChatRequest):
     try:
         logger.info(f"[file {request.id}] 收到文件问答请求: {request.question}")
         answer = await file_agent_service.query(request.question, session_id=request.id)
+        image_map = default_chunk_image_store.resolve_image_map_from_text(answer)
+        sources = _build_file_sources(request.question)
         return {
             "code": 200,
             "message": "success",
             "data": {
                 "success": True,
                 "answer": answer,
+                "image_map": image_map,
+                "sources": sources,
                 "errorMessage": None,
             },
         }
@@ -138,6 +184,7 @@ async def chat_stream(request: ChatRequest):
     logger.info(f"[file {request.id}] 收到流式文件问答请求: {request.question}")
 
     async def event_generator():
+        answer_parts: list[str] = []
         try:
             async for chunk in file_agent_service.query_stream(request.question, session_id=request.id):
                 chunk_type = chunk.get("type", "unknown")
@@ -181,6 +228,7 @@ async def chat_stream(request: ChatRequest):
                         ),
                     }
                 elif chunk_type == "content":
+                    answer_parts.append(str(chunk_data or ""))
                     yield {
                         "event": "message",
                         "data": json.dumps(
@@ -193,12 +241,19 @@ async def chat_stream(request: ChatRequest):
                         ),
                     }
                 elif chunk_type == "complete":
+                    answer = "".join(answer_parts).strip()
+                    image_map = default_chunk_image_store.resolve_image_map_from_text(answer)
+                    sources = _build_file_sources(request.question)
                     yield {
                         "event": "message",
                         "data": json.dumps(
                             {
                                 "type": "done",
-                                "data": chunk_data,
+                                "data": {
+                                    "answer": answer,
+                                    "image_map": image_map,
+                                    "sources": sources,
+                                },
                             },
                             ensure_ascii=False,
                         ),
@@ -222,6 +277,15 @@ async def chat_stream(request: ChatRequest):
             }
 
     return EventSourceResponse(event_generator())
+
+
+@router.get("/image/{image_id}")
+async def get_chunk_image(image_id: str):
+    """Return a locally stored image extracted from an uploaded document."""
+    image_path = default_chunk_image_store.get_image_path(image_id)
+    if image_path is None:
+        raise HTTPException(status_code=404, detail="图片不存在或已过期")
+    return FileResponse(image_path)
 
 
 @router.post("/clear", response_model=ApiResponse)
