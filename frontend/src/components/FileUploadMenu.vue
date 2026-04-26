@@ -7,7 +7,7 @@
         hidden
         @change="handleChange"
       />
-      <span>Upload file</span>
+      <span>上传文件</span>
     </label>
   </div>
 </template>

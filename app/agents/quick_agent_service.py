@@ -9,7 +9,7 @@ from loguru import logger
 
 from agents.Base_agent_service import BaseAgentService
 from settings.config import config
-from tools import get_current_time, retrieve_knowledge, summary_message, web_search
+from tools import get_current_time, summary_message, web_search
 
 
 @before_model
@@ -44,8 +44,8 @@ class QuickAgentService(BaseAgentService):
     """
     quick agent 只做轻量问答。
 
-    这版不再自己拼上下文，
-    直接复用 BaseAgentService 里的 ContextBuilder。
+    智能问答入口不连接知识库，避免普通聊天触发 embedding、
+    Milvus 和 rerank。文件问答入口继续由 file/deep agent 负责 RAG。
     """
     context_mode = "quick"
     context_top_k = 6
@@ -57,10 +57,14 @@ class QuickAgentService(BaseAgentService):
     def get_system_prompt_file(self) -> str:
         return "quick_agent_system.txt"
 
+    def _retrieve_context_documents(self, query: str, top_k: int):
+        del query, top_k
+        return []
+
     def build_agent(self):
         return create_agent(
             self.model,
-            tools=[retrieve_knowledge, get_current_time, web_search],
+            tools=[get_current_time, web_search],
             system_prompt=self.system_prompt,
             #middleware=[trim_messages_middleware],
         )

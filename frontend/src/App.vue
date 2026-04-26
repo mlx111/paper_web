@@ -20,8 +20,10 @@
             :module-hint="currentModule.hint"
             :placeholder="currentModule.placeholder"
             :allow-upload="currentModule.allowUpload"
+            :use-streaming="currentUseStreaming"
             :disabled="isStreaming"
             :is-streaming="isStreaming"
+            @update:use-streaming="currentUseStreaming = $event"
             @send="sendMessage"
             @upload-file="uploadDocument"
           />
@@ -80,51 +82,56 @@ const MAX_FILE_SIZE = 50 * 1024 * 1024;
 const MODULES = [
   {
     key: 'chat',
-    label: 'Chat Assistant',
-    description: 'Everyday Q&A',
-    hint: 'Quick answers',
-    placeholder: 'Ask a question',
+    label: '智能问答',
+    description: '日常问题与快速回答',
+    hint: '快速回答',
+    placeholder: '请输入你的问题',
     allowUpload: false,
     loadHistory: loadSessionHistory,
     clearSession: clearChatSession,
     sendSingle: sendQuickChat,
     sendStream: streamChat,
+    defaultStreaming: false,
   },
   {
     key: 'file',
-    label: 'File Q&A',
-    description: 'Ask about uploaded files',
-    hint: 'RAG retrieval',
-    placeholder: 'Ask about files or documents',
+    label: '文档问答',
+    description: '基于上传文件提问',
+    hint: 'RAG 检索增强',
+    placeholder: '询问上传文档中的内容',
     allowUpload: true,
     loadHistory: loadFileSessionHistory,
     clearSession: clearFileSession,
     sendSingle: sendFileChat,
     sendStream: streamFileChat,
+    defaultStreaming: true,
   },
   {
     key: 'research',
-    label: 'Research',
-    description: 'Paper search and review',
-    hint: 'Research workflow',
-    placeholder: 'Ask a research question, e.g. robotic arm grasping papers',
+    label: '论文研究',
+    description: '论文检索与综述分析',
+    hint: '研究工作流',
+    placeholder: '输入研究问题，例如：机械臂抓取相关论文',
     allowUpload: false,
     loadHistory: loadResearchSessionHistory,
     clearSession: clearResearchSession,
     sendSingle: sendResearchChat,
     sendStream: streamResearchChat,
+    defaultStreaming: true,
   },
 ];
 
 const MODULE_MAP = Object.fromEntries(MODULES.map((item) => [item.key, item]));
 
 function createModuleState(moduleKey) {
+  const moduleConfig = MODULES.find((item) => item.key === moduleKey);
   return {
     sessionId: buildModuleSessionId(moduleKey),
     messageInput: '',
     currentMessages: [],
     histories: loadLocalHistories(moduleKey),
     isStreaming: false,
+    useStreaming: moduleConfig?.defaultStreaming ?? true,
   };
 }
 
@@ -136,8 +143,8 @@ const activeModule = ref('chat');
 const notifications = ref([]);
 const overlay = reactive({
   visible: false,
-  title: 'Working...',
-  subtitle: 'Please wait...',
+  title: '处理中...',
+  subtitle: '请稍候...',
 });
 
 const currentState = computed(() => moduleStates[activeModule.value]);
@@ -147,6 +154,14 @@ const currentMessages = computed(() => currentState.value.currentMessages);
 const currentSessionId = computed(() => currentState.value.sessionId);
 const isStreaming = computed(() => currentState.value.isStreaming);
 const centered = computed(() => currentMessages.value.length === 0);
+const currentUseStreaming = computed({
+  get() {
+    return currentState.value.useStreaming;
+  },
+  set(value) {
+    currentState.value.useStreaming = Boolean(value);
+  },
+});
 const messageInput = computed({
   get() {
     return currentState.value.messageInput;
@@ -173,7 +188,7 @@ function showNotification(message, type = 'info') {
   }, 3000);
 }
 
-function setOverlay(visible, title = 'Working...', subtitle = 'Please wait...') {
+function setOverlay(visible, title = '处理中...', subtitle = '请稍候...') {
   overlay.visible = visible;
   overlay.title = title;
   overlay.subtitle = subtitle;
@@ -252,7 +267,7 @@ async function selectHistory(historyId) {
 
   const localHistory = findStoredHistory(state.histories, historyId);
   if (!localHistory) {
-    showNotification('Could not find this session.', 'error');
+    showNotification('未找到该会话。', 'error');
     return;
   }
 
@@ -272,7 +287,7 @@ async function selectHistory(historyId) {
     state.sessionId = historyId;
     const fallbackMessages = hasMeaningfulMessages(localHistory.messages || []) ? localHistory.messages : [];
     state.currentMessages = normalizeMessages(fallbackMessages);
-    showNotification(`Loaded from local cache: ${error.message}`, 'warning');
+    showNotification(`已从本地缓存加载：${error.message}`, 'warning');
   }
 }
 
@@ -281,7 +296,7 @@ async function deleteHistory(historyId) {
   const moduleConfig = currentModule.value;
 
   if (state.isStreaming) {
-    showNotification('Wait for the current action to finish before deleting a session.', 'warning');
+    showNotification('请等待当前操作完成后再删除会话。', 'warning');
     return;
   }
 
@@ -294,9 +309,9 @@ async function deleteHistory(historyId) {
       startNewChat({ preserveCurrent: false });
     }
 
-    showNotification('Session deleted.', 'success');
+    showNotification('会话已删除。', 'success');
   } catch (error) {
-    showNotification(`Failed to delete session: ${error.message}`, 'error');
+    showNotification(`删除会话失败：${error.message}`, 'error');
   }
 }
 
@@ -322,12 +337,12 @@ async function sendQuickMessage(question) {
     persistConversation();
   } catch (error) {
     updateMessage(loadingId, {
-      content: `Sorry, request failed: ${error.message}`,
+      content: `抱歉，请求失败：${error.message}`,
       loading: false,
       streaming: false,
     });
     persistConversation();
-    showNotification(`Chat failed: ${error.message}`, 'error');
+    showNotification(`对话失败：${error.message}`, 'error');
   }
 }
 
@@ -369,7 +384,7 @@ async function sendStreamingMessage(question) {
         }
 
         if (payload.type === 'error') {
-          throw new Error(payload.data || payload.message || 'Streaming request failed');
+          throw new Error(payload.data || payload.message || '流式请求失败');
         }
       },
     });
@@ -381,11 +396,11 @@ async function sendStreamingMessage(question) {
     persistConversation();
   } catch (error) {
     updateMessage(assistantId, {
-      content: `Sorry, streaming failed: ${error.message}`,
+      content: `抱歉，流式响应失败：${error.message}`,
       streaming: false,
     });
     persistConversation();
-    showNotification(`Streaming failed: ${error.message}`, 'error');
+    showNotification(`流式响应失败：${error.message}`, 'error');
   }
 }
 
@@ -405,10 +420,10 @@ async function sendMessage() {
   state.isStreaming = true;
 
   try {
-    if (activeModule.value === 'chat') {
-      await sendQuickMessage(question);
-    } else {
+    if (state.useStreaming) {
       await sendStreamingMessage(question);
+    } else {
+      await sendQuickMessage(question);
     }
   } finally {
     state.isStreaming = false;
@@ -421,7 +436,7 @@ async function uploadDocument(file) {
   }
 
   if (activeModule.value !== 'file') {
-    showNotification('File upload is only available in the File Q&A module.', 'warning');
+    showNotification('文件上传仅在“文档问答”模块可用。', 'warning');
     return;
   }
 
@@ -429,32 +444,32 @@ async function uploadDocument(file) {
   const lowerName = fileName.toLowerCase();
   const validExtension = ALLOWED_FILE_EXTENSIONS.some((extension) => lowerName.endsWith(extension));
   if (!validExtension) {
-    showNotification('Only TXT, Markdown, PDF, DOC, DOCX, XLS, and XLSX files are supported.', 'error');
+    showNotification('仅支持 TXT、Markdown、PDF、DOC、DOCX、XLS、XLSX 文件。', 'error');
     return;
   }
 
   if (file.size > MAX_FILE_SIZE) {
-    showNotification('File size cannot exceed 50MB.', 'error');
+    showNotification('文件大小不能超过 50MB。', 'error');
     return;
   }
 
   currentState.value.isStreaming = true;
-  setOverlay(true, 'Uploading file...', fileName ? `Uploading: ${fileName}` : 'Please wait...');
+  setOverlay(true, '正在上传文件...', fileName ? `正在上传：${fileName}` : '请稍候...');
 
   try {
     const result = await uploadFile(file);
     if (result?.code === 200 || result?.message === 'success' || result?.data) {
       appendMessage({
         type: 'assistant',
-        content: `${fileName} uploaded successfully.`,
+        content: `${fileName} 上传成功。`,
       });
       persistConversation();
-      showNotification('File uploaded successfully.', 'success');
+      showNotification('文件上传成功。', 'success');
     } else {
-      throw new Error(result?.message || 'Upload failed');
+      throw new Error(result?.message || '上传失败');
     }
   } catch (error) {
-    showNotification(`File upload failed: ${error.message}`, 'error');
+    showNotification(`文件上传失败：${error.message}`, 'error');
   } finally {
     currentState.value.isStreaming = false;
     setOverlay(false);

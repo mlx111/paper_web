@@ -1,7 +1,7 @@
 <template>
   <section class="chat-container" :class="{ centered }">
     <div v-if="!messages.length" class="welcome-greeting">
-      <p>Hello, I am your AI assistant.</p>
+      <p>你好，我是你的智能论文助手。</p>
     </div>
 
     <div ref="scrollRoot" class="chat-messages">

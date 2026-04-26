@@ -1,7 +1,7 @@
 from fastapi import APIRouter,Depends,HTTPException
 from dependencies import get_mail, get_session
 from fastapi_mail import FastMail,MessageSchema,MessageType
-from utils.code import gen_code,verify_code
+from utils.code import CODE_TTL_SECONDS, gen_code, get_mail_code_key, verify_code
 from schemas.user_schemsa import UserSchema,RegisterIn,UsernameStr,RawPasswordStr
 from sqlalchemy.ext.asyncio import AsyncSession
 from core.redis import redis_client
@@ -12,12 +12,10 @@ router = APIRouter(prefix="/auth",tags=["验证码相关接口"])
 async def send_code(email:str,
                     mail:FastMail=Depends(get_mail)):
     code = gen_code()
-    mail_key=f"mail_code:{email}"
-    code_key=f"code:{code}"
-    if await redis_client.exists(code_key):
+    mail_key = get_mail_code_key(email)
+    if await redis_client.exists(mail_key):
         return {"message":"验证码已发送，请稍后再试"}
-    await redis_client.set(mail_key,email,ex=300)  # 间隔有效期为1分钟
-    await redis_client.set(code_key,code,ex=300)  # 验证码有效期为5分钟
+    await redis_client.set(mail_key, code, ex=CODE_TTL_SECONDS)
     # 这里可以添加发送验证码的逻辑，例如通过短信或邮件发送
     message=MessageSchema(subject="测试邮件", 
                           recipients=[email], 

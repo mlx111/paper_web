@@ -32,19 +32,15 @@ class MilvusManager:
             if isinstance(collection_info, dict):
                 fields = collection_info.get("schema", {}).get("fields", []) or collection_info.get("fields", [])
             else:
-                current_dim = self._get_collection_dense_dim(client)
-                if current_dim is not None and int(current_dim) != int(dense_dim):
-                    raise ValueError(
-                        f"Milvus collection '{config.MILVUS_COLLECTION}' 的 dense_embedding 维度为 {current_dim}，"
-                        f"与当前配置 {dense_dim} 不一致。请删除旧 collection 或更换 MILVUS_COLLECTION 后重建。"
-                    )
                 schema = getattr(collection_info, "schema", None)
                 fields = getattr(schema, "fields", []) if schema is not None else []
 
             for field in fields:
-                if isinstance(field, dict) and field.get("name") == "dense_embedding":
-                    params = field.get("params", {}) or {}
-                    dim = params.get("dim") or field.get("dim")
+                field_name = field.get("name") if isinstance(field, dict) else getattr(field, "name", None)
+                if field_name == "dense_embedding":
+                    params = field.get("params", {}) if isinstance(field, dict) else getattr(field, "params", {}) or {}
+                    dim = params.get("dim") if isinstance(params, dict) else None
+                    dim = dim or (field.get("dim") if isinstance(field, dict) else getattr(field, "dim", None))
                     if dim is not None:
                         return int(dim)
             return None
@@ -100,6 +96,12 @@ class MilvusManager:
                 )
                 logger.info("Milvus 集合创建完成: {}", config.MILVUS_COLLECTION)
             else:
+                current_dim = self._get_collection_dense_dim(client)
+                if current_dim is not None and int(current_dim) != int(dense_dim):
+                    raise ValueError(
+                        f"Milvus collection '{config.MILVUS_COLLECTION}' 的 dense_embedding 维度为 {current_dim}，"
+                        f"与当前配置 {dense_dim} 不一致。请删除旧 collection 或更换 MILVUS_COLLECTION 后重建。"
+                    )
                 logger.info("Milvus 集合已存在: {}", config.MILVUS_COLLECTION)
         except Exception as exc:
             logger.error("初始化 Milvus 集合失败: {}", exc)

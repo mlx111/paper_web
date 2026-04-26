@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException
 from sse_starlette.sse import EventSourceResponse
 from models.request import ChatRequest, ClearRequest
 from models.response import SessionInfoResponse, ApiResponse
-from agents.router_agent_service import agent_service
+from agents.quick_agent_service import quick_agent_service as agent_service
 from loguru import logger
 
 router = APIRouter(prefix="/agent", tags=["对话接口"])

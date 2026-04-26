@@ -16,11 +16,11 @@ defineProps({
   },
   title: {
     type: String,
-    default: 'Working...'
+    default: '处理中...'
   },
   subtitle: {
     type: String,
-    default: 'Please wait...'
+    default: '请稍候...'
   }
 });
 </script>

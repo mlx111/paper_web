@@ -351,6 +351,25 @@ class BaseAgentService(ABC):
         messages.append(HumanMessage(content=question))
         return messages, bundle
 
+    @staticmethod
+    def _extract_tool_names(messages) -> list[str]:
+        tool_names: list[str] = []
+        for message in messages or []:
+            for tool_call in getattr(message, "tool_calls", []) or []:
+                if isinstance(tool_call, dict):
+                    name = tool_call.get("name") or tool_call.get("tool_name") or "unknown"
+                else:
+                    name = getattr(tool_call, "name", None) or getattr(tool_call, "tool_name", None) or "unknown"
+                if name and name not in tool_names:
+                    tool_names.append(str(name))
+        return tool_names
+
+    def _log_tool_usage(self, session_id: str, tool_names: list[str]) -> None:
+        if tool_names:
+            logger.info("{} 本轮调用工具，会话: {}，工具: {}", self.__class__.__name__, session_id, tool_names)
+            return
+        logger.info("{} 本轮未调用工具，会话: {}", self.__class__.__name__, session_id)
+
     @abstractmethod
     def build_agent(self):
         raise NotImplementedError
@@ -394,9 +413,7 @@ class BaseAgentService(ABC):
             last_message = messages_result[-1]
             answer = last_message.content if hasattr(last_message, "content") else str(last_message)
 
-            if hasattr(last_message, "tool_calls") and last_message.tool_calls:
-                tool_names = [tool_call.get("name", "unknown") for tool_call in last_message.tool_calls]
-                logger.info("{} 工具调用完成，会话: {}，工具: {}", self.__class__.__name__, session_id, tool_names)
+            self._log_tool_usage(session_id, self._extract_tool_names(messages_result))
 
             if answer:
                 self._save_turn(session_id, question, answer)
@@ -458,10 +475,18 @@ class BaseAgentService(ABC):
                     tool_calls = getattr(token, "tool_calls", None)
                     if tool_calls and isinstance(tool_calls, list):
                         for tool_call in tool_calls:
+                            tool_name = tool_call.get("name", "unknown")
+                            logger.info(
+                                "{} 流式调用工具，会话: {}，工具: {}，节点: {}",
+                                self.__class__.__name__,
+                                session_id,
+                                tool_name,
+                                node_name,
+                            )
                             yield {
                                 "type": "tool_call",
                                 "data": {
-                                    "tool_name": tool_call.get("name", "unknown"),
+                                    "tool_name": tool_name,
                                     "arguments": tool_call.get("arguments", {}),
                                 },
                                 "node": node_name,

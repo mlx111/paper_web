@@ -1,8 +1,8 @@
 <template>
   <aside class="sidebar">
     <div class="sidebar-header">
-      <h1 class="sidebar-title">My Paper Web</h1>
-      <p class="sidebar-subtitle">Separate modules, separate sessions</p>
+      <h1 class="sidebar-title">我的论文助手</h1>
+      <p class="sidebar-subtitle">多模块协作，每个场景独立会话</p>
     </div>
 
     <div class="sidebar-content">
@@ -24,12 +24,12 @@
         <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
           <path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
         </svg>
-        <span>New session</span>
+        <span>新建会话</span>
       </button>
 
       <section class="chat-history-section">
-        <div class="history-header">Sessions</div>
-        <div v-if="!histories.length" class="history-empty">No sessions yet.</div>
+        <div class="history-header">历史会话</div>
+        <div v-if="!histories.length" class="history-empty">暂无会话</div>
         <div v-else class="chat-history-list">
           <div
             v-for="history in histories"
@@ -44,7 +44,7 @@
             <button
               class="history-item-delete"
               type="button"
-              title="Delete session"
+              title="删除会话"
               @click.stop="emit('delete-history', history.id)"
             >
               ×
