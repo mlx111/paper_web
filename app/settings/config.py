@@ -105,6 +105,13 @@ class Settings:
     )
     similarity_threshold: int = field(default_factory=lambda: _get_int("SIMILARITY_THRESHOLD", 5))
 
+    temp_file_max_count: int = field(default_factory=lambda: _get_int("TEMP_FILE_MAX_COUNT", 5))
+    temp_file_max_size_mb: int = field(default_factory=lambda: _get_int("TEMP_FILE_MAX_SIZE_MB", 20))
+    temp_file_max_total_size_mb: int = field(
+        default_factory=lambda: _get_int("TEMP_FILE_MAX_TOTAL_SIZE_MB", 50)
+    )
+    temp_file_ttl_seconds: int = field(default_factory=lambda: _get_int("TEMP_FILE_TTL_SECONDS", 7200))
+
     web_search_key: str = field(default_factory=lambda: _get_str("WEB_SEARCH_KEY", ""))
     web_search_url: str = field(
         default_factory=lambda: _get_str("WEB_SEARCH_URL", "https://api.bocha.cn/v1/web-search")

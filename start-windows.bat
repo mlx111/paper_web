@@ -1,13 +1,24 @@
 @echo off
 chcp 65001 >nul
 setlocal
-set PYTHON_CMD=D:\anaconda3\envs\deepagents\python.exe
-set FRONTEND_DIR=%~dp0frontend
+
+set "PYTHON_CMD=D:\anaconda3\envs\deepagents\python.exe"
+set "FRONTEND_DIR=%~dp0frontend"
+set "RUNTIME_DIR=%~dp0runtime"
+set "BACKEND_PID_FILE=%RUNTIME_DIR%\backend.pid"
+set "FRONTEND_PID_FILE=%RUNTIME_DIR%\frontend.pid"
 
 echo ====================================
 echo Starting MyPaperWeb Services
 echo ====================================
 echo.
+
+if not exist "%RUNTIME_DIR%" (
+    mkdir "%RUNTIME_DIR%"
+)
+
+if exist "%BACKEND_PID_FILE%" del /f /q "%BACKEND_PID_FILE%" >nul 2>&1
+if exist "%FRONTEND_PID_FILE%" del /f /q "%FRONTEND_PID_FILE%" >nul 2>&1
 
 REM Check Docker availability
 echo [1/4] Checking Docker...
@@ -66,9 +77,24 @@ echo.
 
 REM Start application services
 echo [4/4] Starting MyPaperWeb services...
-start "MyPaperWeb API" cmd /k "cd /d %~dp0app && ""%PYTHON_CMD%"" main.py"
-start "MyPaperWeb Frontend" cmd /k "cd /d %FRONTEND_DIR% && call npm run dev"
-echo [OK] MyPaperWeb backend and frontend started
+for /f %%i in ('powershell -NoProfile -Command "$p = Start-Process -FilePath cmd.exe -WorkingDirectory '%~dp0app' -ArgumentList '/k','%PYTHON_CMD% main.py' -PassThru; $p.Id"') do set "BACKEND_PID=%%i"
+if not defined BACKEND_PID (
+    echo [ERROR] Failed to start MyPaperWeb backend
+    pause
+    exit /b 1
+)
+> "%BACKEND_PID_FILE%" echo %BACKEND_PID%
+
+for /f %%i in ('powershell -NoProfile -Command "$p = Start-Process -FilePath cmd.exe -WorkingDirectory '%FRONTEND_DIR%' -ArgumentList '/k','npm run dev' -PassThru; $p.Id"') do set "FRONTEND_PID=%%i"
+if not defined FRONTEND_PID (
+    echo [ERROR] Failed to start MyPaperWeb frontend
+    pause
+    exit /b 1
+)
+> "%FRONTEND_PID_FILE%" echo %FRONTEND_PID%
+
+echo [OK] MyPaperWeb backend started (PID: %BACKEND_PID%)
+echo [OK] MyPaperWeb frontend started (PID: %FRONTEND_PID%)
 echo.
 
 echo ====================================

@@ -12,6 +12,7 @@
 
 from settings.config import config
 from langchain_qwq import ChatQwen
+from core.http_client_factory import create_llm_async_http_client, create_llm_http_client
 from pydantic import SecretStr
 class LLMFactory:
     """LLM 工厂类 - 使用 OpenAI 兼容模式"""
@@ -42,6 +43,8 @@ class LLMFactory:
             base_url=base_url,
             api_key=SecretStr(api_key),
             extra_body=extra_body if extra_body else None,
+            http_client=create_llm_http_client(),
+            http_async_client=create_llm_async_http_client(),
         )
         return llm
 

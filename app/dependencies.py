@@ -1,14 +1,16 @@
-from core.mail import create_mail_instance
-from fastapi_mail import FastMail
-from sqlalchemy.ext.asyncio import AsyncSession
-from models.base import async_session
+from typing import Any
 
-from fastapi import Request
 import redis.asyncio as redis
+from fastapi import Request
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from core.mail import create_mail_instance
+from models.base import async_session
 
 
 async def get_redis(request: Request) -> redis.Redis:
     return request.app.state.redis
+
 
 async def get_session() -> AsyncSession:
     session = async_session()
@@ -17,5 +19,6 @@ async def get_session() -> AsyncSession:
     finally:
         await session.close()
 
-async def get_mail()->FastMail:
+
+async def get_mail() -> Any:
     return create_mail_instance()

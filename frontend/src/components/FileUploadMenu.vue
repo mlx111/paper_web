@@ -5,9 +5,18 @@
         type="file"
         accept=".txt,.md,.markdown,.pdf,.doc,.docx,.xls,.xlsx"
         hidden
-        @change="handleChange"
+        @change="handleKnowledgeChange"
       />
-      <span>上传文件</span>
+      <span>上传到知识库</span>
+    </label>
+    <label class="tools-menu-item">
+      <input
+        type="file"
+        accept=".txt,.md,.markdown,.pdf,.docx,.html,.htm"
+        hidden
+        @change="handleTempChange"
+      />
+      <span>临时解析文件</span>
     </label>
   </div>
 </template>
@@ -20,12 +29,20 @@ defineProps({
   }
 });
 
-const emit = defineEmits(['upload']);
+const emit = defineEmits(['upload', 'temp-upload']);
 
-function handleChange(event) {
+function handleKnowledgeChange(event) {
   const file = event.target.files?.[0];
   if (file) {
     emit('upload', file);
+  }
+  event.target.value = '';
+}
+
+function handleTempChange(event) {
+  const file = event.target.files?.[0];
+  if (file) {
+    emit('temp-upload', file);
   }
   event.target.value = '';
 }

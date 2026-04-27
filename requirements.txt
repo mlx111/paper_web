@@ -44,3 +44,4 @@ PyMuPDF
 Pillow
 unstructured
 openpyxl
+python-pptx

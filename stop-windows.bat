@@ -1,5 +1,10 @@
 @echo off
 chcp 65001 >nul
+setlocal
+
+set "RUNTIME_DIR=%~dp0runtime"
+set "BACKEND_PID_FILE=%RUNTIME_DIR%\backend.pid"
+set "FRONTEND_PID_FILE=%RUNTIME_DIR%\frontend.pid"
 
 echo ====================================
 echo Stopping MyPaperWeb Services
@@ -8,22 +13,12 @@ echo.
 
 REM Stop backend
 echo [1/3] Stopping MyPaperWeb backend...
-taskkill /FI "WINDOWTITLE eq MyPaperWeb API*" /F >nul 2>&1
-if errorlevel 1 (
-    echo [INFO] MyPaperWeb backend is not running or already stopped
-) else (
-    echo [OK] MyPaperWeb backend stopped
-)
+call :stop_process "%BACKEND_PID_FILE%" "MyPaperWeb backend" "MyPaperWeb API*"
 echo.
 
 REM Stop frontend
 echo [2/3] Stopping MyPaperWeb frontend...
-taskkill /FI "WINDOWTITLE eq MyPaperWeb Frontend*" /F >nul 2>&1
-if errorlevel 1 (
-    echo [INFO] MyPaperWeb frontend is not running or already stopped
-) else (
-    echo [OK] MyPaperWeb frontend stopped
-)
+call :stop_process "%FRONTEND_PID_FILE%" "MyPaperWeb frontend" "MyPaperWeb Frontend*"
 echo.
 
 REM Stop Docker containers
@@ -50,3 +45,35 @@ echo   - To remove Docker volumes completely, run:
 echo     docker compose -f vector-database.yml down -v
 echo.
 pause
+exit /b 0
+
+:stop_process
+set "PID_FILE=%~1"
+set "SERVICE_NAME=%~2"
+set "WINDOW_FILTER=%~3"
+set "PID="
+
+if exist "%PID_FILE%" (
+    set /p PID=<"%PID_FILE%"
+)
+
+if defined PID (
+    taskkill /PID %PID% /T /F >nul 2>&1
+    if errorlevel 1 (
+        echo [INFO] %SERVICE_NAME% PID %PID% is not running, trying title fallback...
+    ) else (
+        echo [OK] %SERVICE_NAME% stopped by PID %PID%
+        del /f /q "%PID_FILE%" >nul 2>&1
+        goto :eof
+    )
+)
+
+taskkill /FI "WINDOWTITLE eq %WINDOW_FILTER%" /T /F >nul 2>&1
+if errorlevel 1 (
+    echo [INFO] %SERVICE_NAME% is not running or already stopped
+) else (
+    echo [OK] %SERVICE_NAME% stopped by window title
+)
+
+if exist "%PID_FILE%" del /f /q "%PID_FILE%" >nul 2>&1
+goto :eof

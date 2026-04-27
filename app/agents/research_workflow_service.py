@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import shutil
 import ssl
 import traceback
 import urllib.error
@@ -20,6 +21,8 @@ from pydantic import BaseModel, Field
 
 from models.factory import qwen_model
 from services.history_service import HistoryService
+from tools.academic_tool import academic_search_papers, get_paper_abstract, get_paper_bibtex
+from tools.paper_refiner_tool import build_citation_pool, review_paper_quality
 
 
 try:
@@ -70,6 +73,16 @@ class ResearchJudge(BaseModel):
     )
 
 
+class ResearchClarification(BaseModel):
+    needs_clarification: bool = Field(description="Whether the request is broad enough to need clarification.")
+    questions: list[str] = Field(default_factory=list, description="Up to three clarification questions.")
+    assumed_scope: str = Field(default="", description="Short Chinese summary of the assumed scope for this round.")
+    refined_query: str = Field(
+        default="",
+        description="A refined Chinese research goal that should guide planning and synthesis.",
+    )
+
+
 class SearchPapersInput(BaseModel):
     query: str = Field(description="The query to search for on the selected archive.")
     max_papers: int = Field(default=3, ge=1, le=10, description="Maximum number of papers to return.")
@@ -80,6 +93,10 @@ class ResearchState(TypedDict, total=False):
     num_feedback_requests: int
     is_good_answer: bool
     research_plan: str
+    clarification_questions: list[str]
+    clarification_summary: str
+    refined_query: str
+    final_report: str
     messages: Annotated[Sequence[BaseMessage], add_messages]
 
 
@@ -200,12 +217,23 @@ def download_paper(url: str) -> str:
         return f"Error downloading paper: {exc}"
 
 
-TOOLS: list[BaseTool] = [search_papers, download_paper]
+TOOLS: list[BaseTool] = [
+    download_paper,
+    academic_search_papers,
+    get_paper_abstract,
+    get_paper_bibtex,
+    review_paper_quality,
+    build_citation_pool,
+]
 
 
 DECISION_PROMPT = """
 You are an experienced scientific researcher.
 Your job is to decide whether the user request needs a real research workflow.
+
+Language policy:
+- Respond in Simplified Chinese by default.
+- If the user explicitly requests another language, follow the user's request.
 
 Answer directly only for simple conversational questions.
 If the request asks for papers, evidence, citations, recent research, comparisons across papers,
@@ -216,6 +244,10 @@ or any claim that should be grounded in scientific literature, set requires_rese
 PLANNING_PROMPT = """
 You are an experienced scientific researcher.
 Create a clear step-by-step research plan for the user's request.
+
+Language policy:
+- Write the plan in Simplified Chinese by default.
+- If the user explicitly requests another language, follow the user's request.
 
 Rules:
 - Use only the information provided in the conversation and tools.
@@ -232,15 +264,29 @@ AGENT_PROMPT = """
 You are an experienced scientific researcher.
 Follow the research plan and use the available tools to answer the user's request.
 
+Language policy:
+- Answer in Simplified Chinese by default.
+- If the user explicitly requests another language, follow the user's request.
+- Keep paper titles, venue names, and quoted source text in their original language when helpful, but explain them in Chinese.
+
 Requirements:
 - Add inline citations when you can.
 - Prefer evidence from the papers over unsupported claims.
+- Use academic_search_papers for literature search.
+- Use download-paper only when a paper URL needs full-text extraction.
+- Use get_paper_bibtex when the user needs references.
+- Use build_citation_pool when the user asks for related work or recommended citations.
+- Use review_paper_quality when the user asks to evaluate a paper, abstract, or paper excerpt.
 - If the evidence is insufficient, say so clearly.
 """
 
 
 JUDGE_PROMPT = """
 You are an expert scientific researcher reviewing the final answer.
+
+Language policy:
+- Write feedback in Simplified Chinese by default.
+- If the user explicitly requests another language, follow the user's request.
 
 Decide whether the answer is satisfactory.
 A good answer should:
@@ -250,6 +296,24 @@ A good answer should:
 - Include inline sources when claims are made.
 
 If the answer is not good enough, provide concise and actionable feedback.
+"""
+
+
+CLARIFICATION_PROMPT = """
+You are an experienced scientific researcher.
+The user has asked for a research task.
+
+Language policy:
+- Respond in Simplified Chinese by default.
+- If the user explicitly requests another language, follow the user's request.
+
+Your job:
+- Decide whether the topic is broad or ambiguous enough to need clarification.
+- Produce up to 3 clarification questions that would help narrow the research.
+- Even if no user answers are available yet, produce a practical assumed scope for this round.
+- Produce a refined Chinese research goal that is specific enough for planning and report writing.
+
+Return structured output only.
 """
 
 
@@ -274,6 +338,7 @@ class ResearchWorkflowService:
         self.model = qwen_model.init_model(streaming)
 
         self.decision_llm = self.model.with_structured_output(ResearchDecision)
+        self.clarify_llm = self.model.with_structured_output(ResearchClarification)
         self.agent_llm = self.model.bind_tools(TOOLS)
         self.judge_llm = self.model.with_structured_output(ResearchJudge)
 
@@ -282,6 +347,8 @@ class ResearchWorkflowService:
         self.project_root = Path(__file__).resolve().parent.parent
         self.history_root = self.project_root / "research_history"
         self.history_root.mkdir(parents=True, exist_ok=True)
+        self.artifact_root = self.project_root / "data" / "research"
+        self.artifact_root.mkdir(parents=True, exist_ok=True)
 
         # 第 3 步：构建并编译研究工作流。
         # 这张图只构建一次，后续所有请求复用同一套节点与边。
@@ -312,10 +379,39 @@ class ResearchWorkflowService:
             "num_feedback_requests": 0,
             "is_good_answer": False,
             "research_plan": "",
+            "clarification_questions": [],
+            "clarification_summary": "",
+            "refined_query": question,
+            "final_report": "",
         }
+
+    def _session_storage_dir(self, session_id: str) -> Path:
+        session_dir = self.artifact_root / str(session_id)
+        session_dir.mkdir(parents=True, exist_ok=True)
+        return session_dir
+
+    def _build_artifact_paths(self, session_id: str) -> dict[str, Path]:
+        session_dir = self._session_storage_dir(session_id)
+        return {
+            "clarification": session_dir / "clarification.json",
+            "refined_query": session_dir / "refined_query.json",
+            "final_report": session_dir / "final_report.md",
+        }
+
+    @staticmethod
+    def _write_json(path: Path, payload: dict[str, Any]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    @staticmethod
+    def _write_text(path: Path, content: str) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
 
     def _extract_text(self, message: BaseMessage) -> str:
         content = getattr(message, "content", "")
+        if content is None:
+            return ""
         if isinstance(content, list):
             parts: list[str] = []
             for item in content:
@@ -326,13 +422,123 @@ class ResearchWorkflowService:
             return "\n".join(parts).strip()
         return str(content).strip()
 
+    @staticmethod
+    def _is_search_result_tool(tool_name: str) -> bool:
+        return tool_name in {"search-papers", "academic_search_papers"}
+
+    @staticmethod
+    def _internal_message_names() -> set[str]:
+        return {"clarify", "refine_query", "planning", "judge"}
+
     def _extract_final_answer(self, messages: Sequence[BaseMessage]) -> str:
         for message in reversed(list(messages)):
             if isinstance(message, AIMessage):
+                if getattr(message, "name", "") in self._internal_message_names():
+                    continue
                 text = self._extract_text(message)
                 if text:
                     return text
         return ""
+
+    @staticmethod
+    def _latest_user_question(messages: Sequence[BaseMessage]) -> str:
+        for message in reversed(list(messages)):
+            if isinstance(message, HumanMessage):
+                content = getattr(message, "content", "")
+                return "" if content is None else str(content).strip()
+        return ""
+
+    @staticmethod
+    def _fallback_clarification(question: str) -> ResearchClarification:
+        broad_markers = ["相关", "内容", "看看", "研究", "介绍", "分析", "agent", "agents", "multi-agent"]
+        normalized = (question or "").strip()
+        needs = len(normalized) <= 20 or any(marker.lower() in normalized.lower() for marker in broad_markers)
+        questions = [
+            "你更关注基础概念、代表性论文，还是工程应用？",
+            "你希望重点看单智能体、Multi-Agent，还是 LLM-based Agent？",
+            "你更关心综述报告、论文清单，还是可落地的系统设计？",
+        ] if needs else []
+        assumed_scope = "默认聚焦于近年与 LLM-based agents、多智能体协作及工具调用相关的研究进展。"
+        refined_query = (
+            f"围绕“{normalized}”开展中文研究综述，重点分析核心概念、代表性论文、主流系统架构、应用场景与局限。"
+            if normalized
+            else "围绕用户主题开展中文研究综述，重点分析概念、代表性论文、架构与局限。"
+        )
+        result = ResearchClarification()
+        result.needs_clarification = needs
+        result.questions = questions
+        result.assumed_scope = assumed_scope
+        result.refined_query = refined_query
+        return result
+
+    def _build_final_report_markdown(self, question: str, refined_query: str, plan_text: str, final_answer: str, clarification: str, questions: list[str]) -> str:
+        title = refined_query or question or "研究主题"
+        lines = [
+            f"# {title}",
+            "",
+            "## 原始问题",
+            question or "（未提供）",
+            "",
+            "## 研究范围说明",
+            clarification or "本轮未额外生成范围说明。",
+            "",
+        ]
+        if questions:
+            lines.extend(["## 澄清问题建议", *[f"- {item}" for item in questions], ""])
+        if plan_text:
+            lines.extend(["## 研究计划", plan_text, ""])
+        lines.extend(
+            [
+                "## 研究结论",
+                final_answer or "本轮未产出有效研究结论。",
+                "",
+                "## 说明",
+                "本报告由 research workflow 自动生成，用于沉淀本轮研究范围、计划与结论，便于后续继续研究或生成演示材料。",
+                "",
+            ]
+        )
+        return "\n".join(lines).strip() + "\n"
+
+    def _persist_research_artifacts(
+        self,
+        session_id: str,
+        question: str,
+        clarification_questions: list[str],
+        clarification_summary: str,
+        refined_query: str,
+        research_plan: str,
+        final_answer: str,
+    ) -> dict[str, str]:
+        paths = self._build_artifact_paths(session_id)
+        self._write_json(
+            paths["clarification"],
+            {
+                "question": question,
+                "clarification_questions": clarification_questions,
+                "clarification_summary": clarification_summary,
+            },
+        )
+        self._write_json(
+            paths["refined_query"],
+            {
+                "question": question,
+                "refined_query": refined_query,
+            },
+        )
+        final_report = self._build_final_report_markdown(
+            question=question,
+            refined_query=refined_query,
+            plan_text=research_plan,
+            final_answer=final_answer,
+            clarification=clarification_summary,
+            questions=clarification_questions,
+        )
+        self._write_text(paths["final_report"], final_report)
+        return {
+            "clarification_path": str(paths["clarification"]),
+            "refined_query_path": str(paths["refined_query"]),
+            "report_path": str(paths["final_report"]),
+        }
 
     def _build_workflow(self) -> StateGraph:
         # 整体流程图说明：
@@ -347,26 +553,65 @@ class ResearchWorkflowService:
             response: ResearchDecision = self.decision_llm.invoke([system_prompt] + list(state["messages"]))
             output: dict[str, Any] = {"requires_research": response.requires_research}
             if response.answer:
-                output["messages"] = [AIMessage(content=response.answer)]
+                output["messages"] = [AIMessage(content=response.answer, name="decision")]
             return output
 
         def router(state: ResearchState) -> str:
             # 决策节点的分支控制：
             # - 需要研究 -> 进入 planning
             # - 不需要研究 -> 直接结束
-            return "planning" if state["requires_research"] else "end"
+            return "clarify" if state["requires_research"] else "end"
+
+        def clarify_node(state: ResearchState) -> dict[str, Any]:
+            question = self._latest_user_question(state.get("messages", []))
+            system_prompt = SystemMessage(content=CLARIFICATION_PROMPT)
+            try:
+                response: ResearchClarification = self.clarify_llm.invoke([system_prompt] + list(state["messages"]))
+            except Exception:
+                response = self._fallback_clarification(question)
+
+            summary = response.assumed_scope or "本轮按默认研究范围继续推进。"
+            refined_query = response.refined_query or self._fallback_clarification(question).refined_query
+            return {
+                "clarification_questions": list(response.questions or []),
+                "clarification_summary": summary,
+                "refined_query": refined_query,
+                "messages": [AIMessage(content=f"研究范围聚焦：{summary}\n\n增强研究目标：{refined_query}", name="clarify")],
+            }
+
+        def refine_query_node(state: ResearchState) -> dict[str, Any]:
+            refined_query = state.get("refined_query", "").strip()
+            clarification_summary = state.get("clarification_summary", "").strip()
+            question = self._latest_user_question(state.get("messages", []))
+            if not refined_query:
+                refined_query = self._fallback_clarification(question).refined_query
+            content = f"最终研究目标：{refined_query}"
+            if clarification_summary:
+                content += f"\n\n范围说明：{clarification_summary}"
+            return {
+                "refined_query": refined_query,
+                "messages": [AIMessage(content=content, name="refine_query")],
+            }
 
         def planning_node(state: ResearchState) -> dict[str, Any]:
             # 节点 2：生成研究计划。
             # 这里会让模型先把任务拆成步骤，并提示每一步大概该用什么工具。
             system_prompt = SystemMessage(
-                content=PLANNING_PROMPT.format(tools=_format_tools_description(TOOLS))
+                content=(
+                    PLANNING_PROMPT.format(tools=_format_tools_description(TOOLS))
+                    + f"\n\nRefined research goal:\n{state.get('refined_query', '')}"
+                    + (
+                        f"\n\nAssumed scope:\n{state.get('clarification_summary', '')}"
+                        if state.get("clarification_summary")
+                        else ""
+                    )
+                )
             )
             response = self.model.invoke([system_prompt] + list(state["messages"]))
             plan_text = self._extract_text(response)
             return {
                 "research_plan": plan_text,
-                "messages": [AIMessage(content=plan_text)],
+                "messages": [AIMessage(content=plan_text, name="planning")],
             }
 
         def tools_node(state: ResearchState) -> dict[str, Any]:
@@ -403,10 +648,19 @@ class ResearchWorkflowService:
             # 节点 4：综合计划 + 工具结果，生成面向用户的研究回答。
             # 如果模型觉得证据还不够，它还可以继续发起工具调用。
             plan_text = state.get("research_plan", "")
+            refined_query = state.get("refined_query", "")
+            clarification_summary = state.get("clarification_summary", "")
             system_prompt = SystemMessage(
-                content=f"{AGENT_PROMPT}\n\nResearch plan:\n{plan_text}" if plan_text else AGENT_PROMPT
+                content=(
+                    f"{AGENT_PROMPT}\n\nRefined research goal:\n{refined_query}\n\nResearch plan:\n{plan_text}"
+                    + (f"\n\nAssumed scope:\n{clarification_summary}" if clarification_summary else "")
+                )
+                if plan_text or refined_query
+                else AGENT_PROMPT
             )
             response = self.agent_llm.invoke([system_prompt] + list(state["messages"]))
+            if isinstance(response, AIMessage):
+                response.name = "agent"
             return {"messages": [response]}
 
         def should_continue(state: ResearchState) -> str:
@@ -430,7 +684,7 @@ class ResearchWorkflowService:
                 "num_feedback_requests": num_feedback_requests + 1,
             }
             if response.feedback:
-                output["messages"] = [AIMessage(content=response.feedback)]
+                output["messages"] = [AIMessage(content=response.feedback, name="judge")]
             return output
 
         def final_answer_router(state: ResearchState) -> str:
@@ -439,6 +693,8 @@ class ResearchWorkflowService:
             return "end" if state["is_good_answer"] else "planning"
 
         workflow.add_node("decision_making", decision_making_node)
+        workflow.add_node("clarify", clarify_node)
+        workflow.add_node("refine_query", refine_query_node)
         workflow.add_node("planning", planning_node)
         workflow.add_node("tools", tools_node)
         workflow.add_node("agent", agent_node)
@@ -448,8 +704,10 @@ class ResearchWorkflowService:
         workflow.add_conditional_edges(
             "decision_making",
             router,
-            {"planning": "planning", "end": END},
+            {"clarify": "clarify", "end": END},
         )
+        workflow.add_edge("clarify", "refine_query")
+        workflow.add_edge("refine_query", "planning")
         workflow.add_edge("planning", "agent")
         workflow.add_edge("tools", "agent")
         workflow.add_conditional_edges(
@@ -474,6 +732,16 @@ class ResearchWorkflowService:
             result = await self.app.ainvoke(inputs)
             messages = result.get("messages", []) if isinstance(result, dict) else []
             answer = self._extract_final_answer(messages)
+            if isinstance(result, dict):
+                self._persist_research_artifacts(
+                    session_id=session_id,
+                    question=question,
+                    clarification_questions=list(result.get("clarification_questions") or []),
+                    clarification_summary=str(result.get("clarification_summary") or ""),
+                    refined_query=str(result.get("refined_query") or question),
+                    research_plan=str(result.get("research_plan") or ""),
+                    final_answer=answer,
+                )
             if answer:
                 self._save_turn(session_id, question, answer)
             return answer
@@ -489,11 +757,13 @@ class ResearchWorkflowService:
             logger.info("[research {}] start stream query: {}", session_id, question)
             inputs = self._build_inputs(question, session_id)
             streamed_messages: list[BaseMessage] = []
+            final_state_values: dict[str, Any] = {}
 
             async for chunk in self.app.astream(inputs, stream_mode="updates"):
                 for node_name, updates in chunk.items():
                     if not isinstance(updates, dict):
                         continue
+                    final_state_values.update({key: value for key, value in updates.items() if key != "messages"})
 
                     messages = updates.get("messages") or []
                     if not isinstance(messages, list):
@@ -520,7 +790,7 @@ class ResearchWorkflowService:
                         if isinstance(message, ToolMessage):
                             # 工具返回的原始结果也单独透出。
                             # search-papers 会被标成 search_results，方便前端区分。
-                            event_type = "search_results" if message.name == "search-papers" else "content"
+                            event_type = "search_results" if self._is_search_result_tool(message.name or "") else "content"
                             yield {
                                 "type": event_type,
                                 "node": node_name,
@@ -533,9 +803,8 @@ class ResearchWorkflowService:
                             # 这样后面排查流程时能看清楚每一步发生了什么。
                             text = self._extract_text(message)
                             if text:
-                                if node_name == "planning":
-                                    yield {"type": "debug", "node": node_name, "message_type": message_type, "data": text}
-                                elif node_name == "judge":
+                                message_name = getattr(message, "name", "")
+                                if node_name == "planning" or node_name == "judge" or message_name in {"clarify", "refine_query", "judge"}:
                                     yield {"type": "debug", "node": node_name, "message_type": message_type, "data": text}
                                 else:
                                     yield {"type": "content", "node": node_name, "data": text}
@@ -553,7 +822,26 @@ class ResearchWorkflowService:
             if final_answer:
                 self._save_turn(session_id, question, final_answer)
 
-            yield {"type": "complete", "data": {"answer": final_answer, "module": self.module_name}}
+            artifacts = self._persist_research_artifacts(
+                session_id=session_id,
+                question=question,
+                clarification_questions=list(final_state_values.get("clarification_questions") or []),
+                clarification_summary=str(final_state_values.get("clarification_summary") or ""),
+                refined_query=str(final_state_values.get("refined_query") or question),
+                research_plan=str(final_state_values.get("research_plan") or ""),
+                final_answer=final_answer,
+            )
+
+            yield {
+                "type": "complete",
+                "data": {
+                    "answer": final_answer,
+                    "module": self.module_name,
+                    "artifacts": artifacts,
+                    "report_path": artifacts.get("report_path", ""),
+                    "refined_query": str(final_state_values.get("refined_query") or question),
+                },
+            }
         except Exception as exc:
             logger.error("[research {}] stream failed: {}", session_id, exc)
             logger.error("Exception traceback:\n{}", "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
@@ -580,6 +868,9 @@ class ResearchWorkflowService:
     def clear_session(self, session_id: str) -> bool:
         try:
             self._history(session_id).clear()
+            session_dir = self.artifact_root / str(session_id)
+            if session_dir.exists():
+                shutil.rmtree(session_dir, ignore_errors=True)
             return True
         except Exception as exc:
             logger.error("[research {}] clear_session failed: {}", session_id, exc)

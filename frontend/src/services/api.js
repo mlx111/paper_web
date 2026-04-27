@@ -224,6 +224,48 @@ export async function clearResearchSession(sessionId) {
   }
 }
 
+export async function sendPresentationChat({ sessionId, question, topic, targetPages }) {
+  try {
+    return await postJson('/presentation/chat', {
+      sessionId,
+      topic: topic || question,
+      targetPages
+    });
+  } catch (error) {
+    throw new Error(getErrorMessage(error, 'Presentation chat failed.'));
+  }
+}
+
+export async function streamPresentationChat({ sessionId, question, topic, targetPages, onEvent }) {
+  try {
+    await postStream('/presentation/chat_stream', {
+      sessionId,
+      topic: topic || question,
+      targetPages
+    }, onEvent);
+  } catch (error) {
+    throw new Error(getErrorMessage(error, 'Presentation streaming failed.'));
+  }
+}
+
+export async function loadPresentationSessionHistory(sessionId) {
+  try {
+    return await getJson(`/presentation/session/${encodeURIComponent(sessionId)}`);
+  } catch (error) {
+    throw new Error(getErrorMessage(error, 'Failed to load presentation session history.'));
+  }
+}
+
+export async function clearPresentationSession(sessionId) {
+  try {
+    return await postJson('/presentation/clear', {
+      sessionId
+    });
+  } catch (error) {
+    throw new Error(getErrorMessage(error, 'Failed to clear presentation session.'));
+  }
+}
+
 export async function sendFileChat({ sessionId, question }) {
   try {
     return await postJson('/file/chat', {
@@ -271,5 +313,16 @@ export async function uploadFile(file) {
     return await postFormData('/file/upload', formData);
   } catch (error) {
     throw new Error(getErrorMessage(error, 'File upload failed.'));
+  }
+}
+
+export async function uploadTempFile(file, sessionId) {
+  try {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('session_id', sessionId);
+    return await postFormData('/file/temp-upload', formData);
+  } catch (error) {
+    throw new Error(getErrorMessage(error, 'Temporary file upload failed.'));
   }
 }

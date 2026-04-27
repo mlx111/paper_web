@@ -28,7 +28,11 @@
                   <circle cx="5" cy="12" r="1.5" fill="currentColor" />
                 </svg>
               </button>
-              <FileUploadMenu :open="showToolsMenu" @upload="handleUpload" />
+              <FileUploadMenu
+                :open="showToolsMenu"
+                @upload="handleUpload"
+                @temp-upload="handleTempUpload"
+              />
             </div>
 
             <div class="stream-mode-toggle" role="group" aria-label="输出模式">
@@ -105,7 +109,7 @@ defineProps({
   }
 });
 
-const emit = defineEmits(['update:modelValue', 'update:useStreaming', 'send', 'upload-file']);
+const emit = defineEmits(['update:modelValue', 'update:useStreaming', 'send', 'upload-file', 'upload-temp-file']);
 
 const showToolsMenu = ref(false);
 
@@ -116,6 +120,11 @@ function emitSend() {
 function handleUpload(file) {
   showToolsMenu.value = false;
   emit('upload-file', file);
+}
+
+function handleTempUpload(file) {
+  showToolsMenu.value = false;
+  emit('upload-temp-file', file);
 }
 
 function onKeydown(event) {

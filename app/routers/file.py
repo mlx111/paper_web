@@ -6,7 +6,7 @@ This router handles both file uploads and file-based Q&A powered by deep_agent.
 import json
 from pathlib import Path
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from loguru import logger
 from sse_starlette.sse import EventSourceResponse
@@ -15,6 +15,7 @@ from agents.file_agent_service import file_agent_service
 from models.request import ChatRequest, ClearRequest
 from models.response import ApiResponse, SessionInfoResponse
 from services.chunk_image_store_service import default_chunk_image_store
+from services.temp_file_service import temp_file_service
 from services.vector_index_service import vector_index_service
 from utils.rag_utils import rag_utils_service
 
@@ -26,6 +27,19 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 UPLOAD_DIR = PROJECT_ROOT / "uploads"
 ALLOWED_EXTENSIONS = ["txt", "md", "pdf", "doc", "docx", "xls", "xlsx"]
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
+
+
+def _with_temp_file_context(question: str, session_id: str) -> str:
+    temp_context = temp_file_service.build_context_text(session_id)
+    if not temp_context:
+        return question
+    return (
+        f"{question}\n\n"
+        "[Session temporary files]\n"
+        f"{temp_context}\n\n"
+        "If the user asks about these temporary files, call the extract_document_text tool "
+        "with the listed file_path before answering."
+    )
 
 
 def _format_source_doc(doc) -> dict:
@@ -127,6 +141,62 @@ async def upload_file(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=f"文件上传失败: {exc}")
 
 
+@router.post("/temp-upload")
+async def upload_temp_file(session_id: str = Form(...), file: UploadFile = File(...)):
+    """Upload a session-scoped temporary file for agent-side document parsing."""
+    try:
+        if not file.filename:
+            raise HTTPException(status_code=400, detail="文件名不能为空")
+
+        content = await file.read()
+        result = temp_file_service.save_temp_file(session_id, file.filename, content)
+        if not result.get("ok"):
+            raise HTTPException(status_code=400, detail=result.get("message") or "临时文件上传失败")
+
+        logger.info("[file {}] 临时文件上传成功: {}", session_id, result.get("file_path"))
+        return {
+            "code": 200,
+            "message": "success",
+            "data": {
+                "file_id": result.get("file_id"),
+                "filename": result.get("filename"),
+                "file_path": result.get("file_path"),
+                "size": result.get("size"),
+                "session_id": result.get("session_id"),
+            },
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("[file {}] 临时文件上传失败: {}", session_id, exc)
+        raise HTTPException(status_code=500, detail=f"临时文件上传失败: {exc}")
+
+
+@router.get("/temp-files/{session_id}")
+async def list_temp_files(session_id: str):
+    """List session-scoped temporary files."""
+    try:
+        return {
+            "code": 200,
+            "message": "success",
+            "data": {"files": temp_file_service.list_temp_files(session_id)},
+        }
+    except Exception as exc:
+        logger.error("[file {}] 获取临时文件失败: {}", session_id, exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.post("/temp-clear", response_model=ApiResponse)
+async def clear_temp_files(request: ClearRequest):
+    """Clear session-scoped temporary files."""
+    try:
+        temp_file_service.clear_session_temp_files(request.session_id)
+        return ApiResponse(status="success", message="临时文件已清空", data=None)
+    except Exception as exc:
+        logger.error("[file {}] 清空临时文件失败: {}", request.session_id, exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
 @router.post("/index_directory")
 async def index_directory(directory_path: str = None):
     """Index all files under a given directory."""
@@ -151,7 +221,8 @@ async def chat(request: ChatRequest):
     """File module chat entry point powered by deep_agent."""
     try:
         logger.info(f"[file {request.id}] 收到文件问答请求: {request.question}")
-        answer = await file_agent_service.query(request.question, session_id=request.id)
+        agent_question = _with_temp_file_context(request.question, request.id)
+        answer = await file_agent_service.query(agent_question, session_id=request.id)
         image_map = default_chunk_image_store.resolve_image_map_from_text(answer)
         sources = _build_file_sources(request.question)
         return {
@@ -186,7 +257,8 @@ async def chat_stream(request: ChatRequest):
     async def event_generator():
         answer_parts: list[str] = []
         try:
-            async for chunk in file_agent_service.query_stream(request.question, session_id=request.id):
+            agent_question = _with_temp_file_context(request.question, request.id)
+            async for chunk in file_agent_service.query_stream(agent_question, session_id=request.id):
                 chunk_type = chunk.get("type", "unknown")
                 chunk_data = chunk.get("data", None)
 
@@ -293,6 +365,7 @@ async def clear_session(request: ClearRequest):
     """Clear file-module session history."""
     try:
         success = file_agent_service.clear_session(request.session_id)
+        temp_file_service.clear_session_temp_files(request.session_id)
         return ApiResponse(
             status="success" if success else "error",
             message="文件会话已清空" if success else "清空文件会话失败",

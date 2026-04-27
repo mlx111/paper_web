@@ -18,6 +18,7 @@ STUB_MODULES = [
     "models.request",
     "models.response",
     "services.chunk_image_store_service",
+    "services.temp_file_service",
     "services.vector_index_service",
     "utils.rag_utils",
 ]
@@ -52,6 +53,7 @@ class _Document:
 
 sys.modules["fastapi"].APIRouter = _Router
 sys.modules["fastapi"].File = lambda *args, **kwargs: None
+sys.modules["fastapi"].Form = lambda *args, **kwargs: None
 sys.modules["fastapi"].HTTPException = _HTTPException
 sys.modules["fastapi"].UploadFile = object
 sys.modules["fastapi.responses"].FileResponse = object
@@ -68,6 +70,10 @@ sys.modules["models.request"].ClearRequest = object
 sys.modules["models.response"].ApiResponse = object
 sys.modules["models.response"].SessionInfoResponse = object
 sys.modules["services.chunk_image_store_service"].default_chunk_image_store = types.SimpleNamespace()
+sys.modules["services.temp_file_service"].temp_file_service = types.SimpleNamespace(
+    build_context_text=lambda session_id: "",
+    clear_session_temp_files=lambda session_id: True,
+)
 sys.modules["services.vector_index_service"].vector_index_service = types.SimpleNamespace()
 sys.modules["utils.rag_utils"].rag_utils_service = types.SimpleNamespace()
 

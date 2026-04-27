@@ -10,6 +10,15 @@
       </template>
       <template v-else-if="isAssistantLike">
         <div v-html="renderedHtml"></div>
+        <div v-if="hasDebugEntries" class="message-debug">
+          <div class="message-debug-title">研究过程</div>
+          <div class="message-debug-list">
+            <div v-for="entry in debugEntries" :key="entry.key" class="message-debug-item">
+              <div class="message-debug-node">{{ entry.nodeLabel }}</div>
+              <div class="message-debug-text">{{ entry.text }}</div>
+            </div>
+          </div>
+        </div>
         <div v-if="hasSources" class="message-sources">
           <div class="message-sources-title">来源</div>
           <div class="message-source-list">
@@ -44,6 +53,16 @@ const props = defineProps({
 const contentRoot = ref(null);
 const isAssistantLike = computed(() => props.message.type === 'assistant');
 const renderedHtml = computed(() => renderMarkdown(props.message.content || '', props.message.imageMap || {}));
+const debugEntries = computed(() => {
+  const entries = Array.isArray(props.message.debugEntries) ? props.message.debugEntries : [];
+  return entries
+    .map((entry, index) => ({
+      key: entry.id || `${entry.node || 'debug'}-${index}`,
+      nodeLabel: entry.nodeLabel || entry.node || '阶段',
+      text: entry.text || ''
+    }))
+    .filter((entry) => entry.text);
+});
 const displaySources = computed(() => {
   const sources = Array.isArray(props.message.sources) ? props.message.sources : [];
   return sources.slice(0, 4).map((source, index) => {
@@ -56,6 +75,7 @@ const displaySources = computed(() => {
     };
   });
 });
+const hasDebugEntries = computed(() => debugEntries.value.length > 0);
 const hasSources = computed(() => displaySources.value.length > 0);
 
 function applyHighlight() {

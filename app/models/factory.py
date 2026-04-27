@@ -1,6 +1,7 @@
 from langchain_qwq import ChatQwen
 import os
 
+from core.http_client_factory import create_llm_async_http_client, create_llm_http_client
 from pydantic import SecretStr
 from settings.config import config
 
@@ -23,6 +24,8 @@ class QwenModel():
             base_url=self.BASE_URL,
             temperature=0.7,
             streaming=steram,
+            http_client=create_llm_http_client(),
+            http_async_client=create_llm_async_http_client(),
         )
         return model
 

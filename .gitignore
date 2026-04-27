@@ -32,6 +32,7 @@ volumes/
 app/data/*.json
 app/data/notes/
 app/data/images/
+app/data/tmp/
 
 # Logs
 *.log

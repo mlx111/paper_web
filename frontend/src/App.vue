@@ -26,6 +26,7 @@
             @update:use-streaming="currentUseStreaming = $event"
             @send="sendMessage"
             @upload-file="uploadDocument"
+            @upload-temp-file="uploadTempDocument"
           />
         </template>
       </ChatWindow>
@@ -51,17 +52,22 @@ import Sidebar from './components/Sidebar.vue';
 import {
   clearChatSession,
   clearFileSession,
+  clearPresentationSession,
   clearResearchSession,
   loadFileSessionHistory,
+  loadPresentationSessionHistory,
   loadResearchSessionHistory,
   loadSessionHistory,
   sendFileChat,
+  sendPresentationChat,
   sendQuickChat,
   sendResearchChat,
   streamChat,
   streamFileChat,
+  streamPresentationChat,
   streamResearchChat,
   uploadFile,
+  uploadTempFile,
 } from './services/api.js';
 import {
   buildModuleSessionId,
@@ -77,7 +83,9 @@ import {
 } from './utils/session.js';
 
 const ALLOWED_FILE_EXTENSIONS = ['.txt', '.md', '.markdown', '.pdf', '.doc', '.docx', '.xls', '.xlsx'];
+const ALLOWED_TEMP_FILE_EXTENSIONS = ['.txt', '.md', '.markdown', '.pdf', '.docx', '.html', '.htm'];
 const MAX_FILE_SIZE = 50 * 1024 * 1024;
+const MAX_TEMP_FILE_SIZE = 20 * 1024 * 1024;
 
 const MODULES = [
   {
@@ -117,6 +125,19 @@ const MODULES = [
     clearSession: clearResearchSession,
     sendSingle: sendResearchChat,
     sendStream: streamResearchChat,
+    defaultStreaming: true,
+  },
+  {
+    key: 'presentation',
+    label: 'PPT生成',
+    description: '通用主题演示文稿生成',
+    hint: '规划 + 讲稿 + 导出',
+    placeholder: '输入一个演示主题，例如：企业RAG方案分享',
+    allowUpload: false,
+    loadHistory: loadPresentationSessionHistory,
+    clearSession: clearPresentationSession,
+    sendSingle: sendPresentationChat,
+    sendStream: streamPresentationChat,
     defaultStreaming: true,
   },
 ];
@@ -215,6 +236,7 @@ function appendMessage(payload, moduleKey = activeModule.value) {
     streaming: Boolean(payload?.streaming),
     imageMap: payload?.imageMap || payload?.image_map || {},
     sources: Array.isArray(payload?.sources) ? payload.sources : [],
+    debugEntries: Array.isArray(payload?.debugEntries) ? payload.debugEntries : [],
   });
   state.currentMessages.push(message);
   return message.id;
@@ -355,11 +377,48 @@ async function sendStreamingMessage(question) {
     type: 'assistant',
     content: '',
     streaming: true,
+    debugEntries: [],
   });
 
   let fullResponse = '';
   let imageMap = {};
   let sources = [];
+
+  function formatDebugNodeLabel(nodeName) {
+    const mapping = {
+      decision_making: '研究判断',
+      clarify: '范围澄清',
+      refine_query: '目标聚焦',
+      planning: '研究计划',
+      agent: '研究生成',
+      tools: '工具调用',
+      judge: '质量检查'
+    };
+    return mapping[nodeName] || nodeName || '研究阶段';
+  }
+
+  function appendDebugEntry(payload) {
+    const text = typeof payload?.data === 'string' ? payload.data.trim() : '';
+    if (!text) {
+      return;
+    }
+
+    updateMessage(assistantId, (previous) => {
+      const existing = Array.isArray(previous.debugEntries) ? previous.debugEntries : [];
+      return {
+        debugEntries: [
+          ...existing,
+          {
+            id: `${payload?.node || 'debug'}-${existing.length + 1}`,
+            node: payload?.node || 'debug',
+            nodeLabel: formatDebugNodeLabel(payload?.node),
+            text
+          }
+        ],
+        streaming: true
+      };
+    });
+  }
 
   try {
     await currentModule.value.sendStream({
@@ -376,6 +435,11 @@ async function sendStreamingMessage(question) {
             content: fullResponse,
             streaming: true,
           });
+          return;
+        }
+
+        if (payload.type === 'debug') {
+          appendDebugEntry(payload);
           return;
         }
 
@@ -482,6 +546,52 @@ async function uploadDocument(file) {
     }
   } catch (error) {
     showNotification(`文件上传失败：${error.message}`, 'error');
+  } finally {
+    currentState.value.isStreaming = false;
+    setOverlay(false);
+  }
+}
+
+async function uploadTempDocument(file) {
+  if (!file) {
+    return;
+  }
+
+  if (activeModule.value !== 'file') {
+    showNotification('临时文件仅在“文档问答”模块可用。', 'warning');
+    return;
+  }
+
+  const fileName = file.name || '';
+  const lowerName = fileName.toLowerCase();
+  const validExtension = ALLOWED_TEMP_FILE_EXTENSIONS.some((extension) => lowerName.endsWith(extension));
+  if (!validExtension) {
+    showNotification('临时解析仅支持 TXT、Markdown、PDF、DOCX、HTML 文件。', 'error');
+    return;
+  }
+
+  if (file.size > MAX_TEMP_FILE_SIZE) {
+    showNotification('临时文件大小不能超过 20MB。', 'error');
+    return;
+  }
+
+  currentState.value.isStreaming = true;
+  setOverlay(true, '正在上传临时文件...', fileName ? `正在上传：${fileName}` : '请稍候...');
+
+  try {
+    const result = await uploadTempFile(file, currentSessionId.value);
+    if (result?.code === 200 || result?.message === 'success' || result?.data) {
+      appendMessage({
+        type: 'assistant',
+        content: `${fileName} 已作为临时文件上传，可直接让助手解析。`,
+      });
+      persistConversation();
+      showNotification('临时文件上传成功。', 'success');
+    } else {
+      throw new Error(result?.message || '临时上传失败');
+    }
+  } catch (error) {
+    showNotification(`临时文件上传失败：${error.message}`, 'error');
   } finally {
     currentState.value.isStreaming = false;
     setOverlay(false);

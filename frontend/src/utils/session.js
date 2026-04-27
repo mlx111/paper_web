@@ -44,7 +44,8 @@ export function normalizeMessage(message = {}) {
     loading: Boolean(message.loading),
     streaming: Boolean(message.streaming),
     imageMap: message.imageMap || message.image_map || {},
-    sources: Array.isArray(message.sources) ? message.sources : []
+    sources: Array.isArray(message.sources) ? message.sources : [],
+    debugEntries: Array.isArray(message.debugEntries) ? message.debugEntries : []
   };
 }
 

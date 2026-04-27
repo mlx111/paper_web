@@ -4,7 +4,17 @@ from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, FilesystemBackend, StateBackend, StoreBackend
 
 from agents.Base_agent_service import BaseAgentService
-from tools import get_current_time, retrieve_knowledge, web_search
+from tools import (
+    academic_search_papers,
+    build_citation_pool,
+    extract_document_text,
+    get_current_time,
+    get_paper_abstract,
+    get_paper_bibtex,
+    retrieve_knowledge,
+    review_paper_quality,
+    web_search,
+)
 from utils.notes import get_notes
 
 
@@ -35,7 +45,17 @@ class DeepAgentService(BaseAgentService):
     def build_agent(self):
         return create_deep_agent(
             model=self.model,
-            tools=[retrieve_knowledge, get_current_time, web_search],
+            tools=[
+                retrieve_knowledge,
+                get_current_time,
+                web_search,
+                academic_search_papers,
+                get_paper_abstract,
+                get_paper_bibtex,
+                review_paper_quality,
+                build_citation_pool,
+                extract_document_text,
+            ],
             subagents=[],
             skills=["/skills/"],
             memory=[],
