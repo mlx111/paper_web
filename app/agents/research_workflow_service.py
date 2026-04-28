@@ -97,6 +97,9 @@ class ResearchState(TypedDict, total=False):
     clarification_summary: str
     refined_query: str
     final_report: str
+    research_branches: list[dict[str, Any]]
+    aggregated_learnings: list[str]
+    branch_sources: list[dict[str, Any]]
     messages: Annotated[Sequence[BaseMessage], add_messages]
 
 
@@ -383,6 +386,9 @@ class ResearchWorkflowService:
             "clarification_summary": "",
             "refined_query": question,
             "final_report": "",
+            "research_branches": [],
+            "aggregated_learnings": [],
+            "branch_sources": [],
         }
 
     def _session_storage_dir(self, session_id: str) -> Path:
@@ -395,6 +401,9 @@ class ResearchWorkflowService:
         return {
             "clarification": session_dir / "clarification.json",
             "refined_query": session_dir / "refined_query.json",
+            "branches": session_dir / "branches.json",
+            "learnings": session_dir / "learnings.json",
+            "sources": session_dir / "sources.json",
             "final_report": session_dir / "final_report.md",
         }
 
@@ -471,7 +480,151 @@ class ResearchWorkflowService:
         result.refined_query = refined_query
         return result
 
-    def _build_final_report_markdown(self, question: str, refined_query: str, plan_text: str, final_answer: str, clarification: str, questions: list[str]) -> str:
+    @staticmethod
+    def _normalize_branch(branch: dict[str, Any], index: int) -> dict[str, Any]:
+        branch_id = str(branch.get("branch_id") or f"branch_{index + 1}")
+        branch_query = str(branch.get("branch_query") or branch.get("query") or "").strip()
+        branch_goal = str(branch.get("branch_goal") or branch.get("goal") or branch_query).strip()
+        return {
+            "branch_id": branch_id,
+            "branch_query": branch_query,
+            "branch_goal": branch_goal,
+            "branch_learnings": list(branch.get("branch_learnings") or []),
+            "branch_sources": list(branch.get("branch_sources") or []),
+        }
+
+    def _initial_research_branches(self, refined_query: str) -> list[dict[str, Any]]:
+        query = (refined_query or "研究主题").strip()
+        templates = [
+            ("理论基础与关键概念", "梳理核心概念、问题定义和技术脉络"),
+            ("最新方法与代表论文", "检索近年代表性论文、方法和实验结论"),
+            ("应用场景、局限与未来方向", "总结应用价值、主要限制和后续研究机会"),
+        ]
+        return [
+            self._normalize_branch(
+                {
+                    "branch_query": f"{query}：{topic}",
+                    "branch_goal": f"{goal}。",
+                },
+                index=index,
+            )
+            for index, (topic, goal) in enumerate(templates)
+        ]
+
+    def _academic_search(self, query: str, max_papers: int = 3) -> Any:
+        if hasattr(academic_search_papers, "invoke"):
+            return academic_search_papers.invoke({"query": query, "max_papers": max_papers})
+        return academic_search_papers(query=query, max_papers=max_papers)
+
+    @staticmethod
+    def _normalize_sources(raw_sources: Any, branch: dict[str, Any]) -> list[dict[str, Any]]:
+        if isinstance(raw_sources, list):
+            source_items = raw_sources
+        elif isinstance(raw_sources, dict):
+            source_items = raw_sources.get("results") or raw_sources.get("papers") or [raw_sources]
+        elif raw_sources:
+            source_items = [{"title": "搜索结果", "abstract": str(raw_sources)}]
+        else:
+            source_items = []
+
+        normalized: list[dict[str, Any]] = []
+        for source in source_items:
+            if isinstance(source, dict):
+                item = dict(source)
+            else:
+                item = {"title": "搜索结果", "abstract": str(source)}
+            item.setdefault("branch_id", branch["branch_id"])
+            item.setdefault("branch_query", branch["branch_query"])
+            normalized.append(item)
+        return normalized
+
+    def _gather_branch_sources(self, branches: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        gathered: list[dict[str, Any]] = []
+        for index, branch in enumerate(branches or []):
+            normalized_branch = self._normalize_branch(branch, index)
+            raw_sources = self._academic_search(normalized_branch["branch_query"], max_papers=3)
+            normalized_branch["branch_sources"] = self._normalize_sources(raw_sources, normalized_branch)
+            gathered.append(normalized_branch)
+        return gathered
+
+    @staticmethod
+    def _source_learning(source: dict[str, Any]) -> str:
+        title = str(source.get("title") or source.get("name") or "来源").strip()
+        abstract = str(source.get("abstract") or source.get("snippet") or source.get("summary") or "").strip()
+        if len(abstract) > 120:
+            abstract = abstract[:120].rstrip() + "..."
+        return f"{title}: {abstract}" if abstract else title
+
+    def _synthesize_branches(self, branches: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        synthesized: list[dict[str, Any]] = []
+        for index, branch in enumerate(branches or []):
+            normalized_branch = self._normalize_branch(branch, index)
+            learnings: list[str] = []
+            seen: set[str] = set()
+            for source in normalized_branch.get("branch_sources", []):
+                if not isinstance(source, dict):
+                    continue
+                learning = self._source_learning(source)
+                dedupe_key = str(
+                    source.get("abstract") or source.get("snippet") or source.get("summary") or learning
+                ).strip().lower()
+                if learning and dedupe_key not in seen:
+                    seen.add(dedupe_key)
+                    learnings.append(learning)
+                if len(learnings) >= 5:
+                    break
+            if not learnings:
+                learnings.append(f"{normalized_branch['branch_goal']}：暂无可用来源，需要继续检索。")
+            normalized_branch["branch_learnings"] = learnings
+            synthesized.append(normalized_branch)
+        return synthesized
+
+    @staticmethod
+    def _aggregate_learnings(branches: list[dict[str, Any]]) -> list[str]:
+        aggregated: list[str] = []
+        seen: set[str] = set()
+        for branch in branches or []:
+            for learning in branch.get("branch_learnings", []) or []:
+                text = str(learning).strip()
+                dedupe_key = text.lower()
+                if text and dedupe_key not in seen:
+                    seen.add(dedupe_key)
+                    aggregated.append(text)
+        return aggregated
+
+    def _persist_branch_artifacts(
+        self,
+        session_id: str,
+        research_branches: list[dict[str, Any]],
+        aggregated_learnings: list[str],
+        branch_sources: list[dict[str, Any]],
+    ) -> dict[str, str]:
+        paths = self._build_artifact_paths(session_id)
+        normalized_branches = [
+            self._normalize_branch(branch, index)
+            for index, branch in enumerate(research_branches or [])
+        ]
+        self._write_json(paths["branches"], {"branches": normalized_branches})
+        self._write_json(paths["learnings"], {"learnings": list(aggregated_learnings or [])})
+        self._write_json(paths["sources"], {"sources": list(branch_sources or [])})
+        return {
+            "branches_path": str(paths["branches"]),
+            "learnings_path": str(paths["learnings"]),
+            "sources_path": str(paths["sources"]),
+        }
+
+    def _build_final_report_markdown(
+        self,
+        question: str,
+        refined_query: str,
+        plan_text: str,
+        final_answer: str,
+        clarification: str,
+        questions: list[str],
+        research_branches: list[dict[str, Any]] | None = None,
+        aggregated_learnings: list[str] | None = None,
+        branch_sources: list[dict[str, Any]] | None = None,
+    ) -> str:
         title = refined_query or question or "研究主题"
         lines = [
             f"# {title}",
@@ -487,6 +640,20 @@ class ResearchWorkflowService:
             lines.extend(["## 澄清问题建议", *[f"- {item}" for item in questions], ""])
         if plan_text:
             lines.extend(["## 研究计划", plan_text, ""])
+        if research_branches:
+            lines.extend(["## 研究方向"])
+            for branch in research_branches:
+                lines.append(f"- {branch.get('branch_id', '')}: {branch.get('branch_goal', '')}")
+            lines.append("")
+        if aggregated_learnings:
+            lines.extend(["## 核心发现", *[f"- {item}" for item in aggregated_learnings], ""])
+        if branch_sources:
+            lines.extend(["## 来源概览"])
+            for source in branch_sources:
+                title_text = source.get("title") or source.get("name") or "来源"
+                branch_id = source.get("branch_id", "")
+                lines.append(f"- {branch_id}: {title_text}" if branch_id else f"- {title_text}")
+            lines.append("")
         lines.extend(
             [
                 "## 研究结论",
@@ -508,8 +675,14 @@ class ResearchWorkflowService:
         refined_query: str,
         research_plan: str,
         final_answer: str,
+        research_branches: list[dict[str, Any]] | None = None,
+        aggregated_learnings: list[str] | None = None,
+        branch_sources: list[dict[str, Any]] | None = None,
     ) -> dict[str, str]:
         paths = self._build_artifact_paths(session_id)
+        research_branches = research_branches or []
+        aggregated_learnings = aggregated_learnings or []
+        branch_sources = branch_sources or []
         self._write_json(
             paths["clarification"],
             {
@@ -532,12 +705,22 @@ class ResearchWorkflowService:
             final_answer=final_answer,
             clarification=clarification_summary,
             questions=clarification_questions,
+            research_branches=research_branches,
+            aggregated_learnings=aggregated_learnings,
+            branch_sources=branch_sources,
         )
         self._write_text(paths["final_report"], final_report)
+        branch_artifacts = self._persist_branch_artifacts(
+            session_id=session_id,
+            research_branches=research_branches,
+            aggregated_learnings=aggregated_learnings,
+            branch_sources=branch_sources,
+        )
         return {
             "clarification_path": str(paths["clarification"]),
             "refined_query_path": str(paths["refined_query"]),
             "report_path": str(paths["final_report"]),
+            **branch_artifacts,
         }
 
     def _build_workflow(self) -> StateGraph:
@@ -593,6 +776,45 @@ class ResearchWorkflowService:
                 "messages": [AIMessage(content=content, name="refine_query")],
             }
 
+        def expand_node(state: ResearchState) -> dict[str, Any]:
+            refined_query = state.get("refined_query", "").strip()
+            branches = self._initial_research_branches(refined_query)
+            summary = "\n".join(
+                f"- {branch['branch_id']}: {branch['branch_goal']} ({branch['branch_query']})"
+                for branch in branches
+            )
+            return {
+                "research_branches": branches,
+                "messages": [AIMessage(content=f"研究分支：\n{summary}", name="expand")],
+            }
+
+        def branch_gather_node(state: ResearchState) -> dict[str, Any]:
+            branches = self._gather_branch_sources(list(state.get("research_branches") or []))
+            branch_sources = [
+                source
+                for branch in branches
+                for source in branch.get("branch_sources", [])
+            ]
+            summary = "\n".join(
+                f"- {branch['branch_id']}: 收集到 {len(branch.get('branch_sources', []))} 条来源"
+                for branch in branches
+            )
+            return {
+                "research_branches": branches,
+                "branch_sources": branch_sources,
+                "messages": [AIMessage(content=f"分支检索完成：\n{summary}", name="branch_gather")],
+            }
+
+        def branch_synthesize_node(state: ResearchState) -> dict[str, Any]:
+            branches = self._synthesize_branches(list(state.get("research_branches") or []))
+            learnings = self._aggregate_learnings(branches)
+            summary = "\n".join(f"- {item}" for item in learnings)
+            return {
+                "research_branches": branches,
+                "aggregated_learnings": learnings,
+                "messages": [AIMessage(content=f"分支发现汇总：\n{summary}", name="branch_synthesize")],
+            }
+
         def planning_node(state: ResearchState) -> dict[str, Any]:
             # 节点 2：生成研究计划。
             # 这里会让模型先把任务拆成步骤，并提示每一步大概该用什么工具。
@@ -600,6 +822,12 @@ class ResearchWorkflowService:
                 content=(
                     PLANNING_PROMPT.format(tools=_format_tools_description(TOOLS))
                     + f"\n\nRefined research goal:\n{state.get('refined_query', '')}"
+                    + (
+                        "\n\nAggregated learnings from branch research:\n"
+                        + "\n".join(f"- {item}" for item in state.get("aggregated_learnings", []))
+                        if state.get("aggregated_learnings")
+                        else ""
+                    )
                     + (
                         f"\n\nAssumed scope:\n{state.get('clarification_summary', '')}"
                         if state.get("clarification_summary")
@@ -650,9 +878,16 @@ class ResearchWorkflowService:
             plan_text = state.get("research_plan", "")
             refined_query = state.get("refined_query", "")
             clarification_summary = state.get("clarification_summary", "")
+            aggregated_learnings = state.get("aggregated_learnings", [])
+            learning_context = (
+                "\n\nAggregated learnings:\n" + "\n".join(f"- {item}" for item in aggregated_learnings)
+                if aggregated_learnings
+                else ""
+            )
             system_prompt = SystemMessage(
                 content=(
                     f"{AGENT_PROMPT}\n\nRefined research goal:\n{refined_query}\n\nResearch plan:\n{plan_text}"
+                    + learning_context
                     + (f"\n\nAssumed scope:\n{clarification_summary}" if clarification_summary else "")
                 )
                 if plan_text or refined_query
@@ -695,6 +930,9 @@ class ResearchWorkflowService:
         workflow.add_node("decision_making", decision_making_node)
         workflow.add_node("clarify", clarify_node)
         workflow.add_node("refine_query", refine_query_node)
+        workflow.add_node("expand", expand_node)
+        workflow.add_node("branch_gather", branch_gather_node)
+        workflow.add_node("branch_synthesize", branch_synthesize_node)
         workflow.add_node("planning", planning_node)
         workflow.add_node("tools", tools_node)
         workflow.add_node("agent", agent_node)
@@ -707,7 +945,10 @@ class ResearchWorkflowService:
             {"clarify": "clarify", "end": END},
         )
         workflow.add_edge("clarify", "refine_query")
-        workflow.add_edge("refine_query", "planning")
+        workflow.add_edge("refine_query", "expand")
+        workflow.add_edge("expand", "branch_gather")
+        workflow.add_edge("branch_gather", "branch_synthesize")
+        workflow.add_edge("branch_synthesize", "planning")
         workflow.add_edge("planning", "agent")
         workflow.add_edge("tools", "agent")
         workflow.add_conditional_edges(
@@ -741,6 +982,9 @@ class ResearchWorkflowService:
                     refined_query=str(result.get("refined_query") or question),
                     research_plan=str(result.get("research_plan") or ""),
                     final_answer=answer,
+                    research_branches=list(result.get("research_branches") or []),
+                    aggregated_learnings=list(result.get("aggregated_learnings") or []),
+                    branch_sources=list(result.get("branch_sources") or []),
                 )
             if answer:
                 self._save_turn(session_id, question, answer)
@@ -804,7 +1048,10 @@ class ResearchWorkflowService:
                             text = self._extract_text(message)
                             if text:
                                 message_name = getattr(message, "name", "")
-                                if node_name == "planning" or node_name == "judge" or message_name in {"clarify", "refine_query", "judge"}:
+                                if (
+                                    node_name in {"planning", "judge", "expand", "branch_gather", "branch_synthesize"}
+                                    or message_name in {"clarify", "refine_query", "judge", "expand", "branch_gather", "branch_synthesize"}
+                                ):
                                     yield {"type": "debug", "node": node_name, "message_type": message_type, "data": text}
                                 else:
                                     yield {"type": "content", "node": node_name, "data": text}
@@ -830,6 +1077,9 @@ class ResearchWorkflowService:
                 refined_query=str(final_state_values.get("refined_query") or question),
                 research_plan=str(final_state_values.get("research_plan") or ""),
                 final_answer=final_answer,
+                research_branches=list(final_state_values.get("research_branches") or []),
+                aggregated_learnings=list(final_state_values.get("aggregated_learnings") or []),
+                branch_sources=list(final_state_values.get("branch_sources") or []),
             )
 
             yield {
