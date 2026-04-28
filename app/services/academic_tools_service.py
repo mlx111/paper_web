@@ -70,6 +70,7 @@ class AcademicToolsService:
         query: str,
         result_limit: int = 10,
         engine: str = "openalex",
+        min_year: Optional[int] = None,
         s2_api_key: Optional[str] = None,
     ) -> dict[str, Any]:
         if not query or not query.strip():
@@ -80,13 +81,13 @@ class AcademicToolsService:
         s2_api_key = s2_api_key or os.getenv("S2_API_KEY")
 
         if engine == "openalex":
-            papers = self._search_openalex(query, result_limit)
+            papers = self._search_openalex(query, result_limit, min_year=min_year)
         elif engine == "semanticscholar":
-            papers = self._search_semanticscholar(query, result_limit, s2_api_key)
+            papers = self._search_semanticscholar(query, result_limit, s2_api_key, min_year=min_year)
             if not papers:
-                papers = self._search_openalex(query, result_limit)
+                papers = self._search_openalex(query, result_limit, min_year=min_year)
         elif engine == "arxiv":
-            papers = self._search_arxiv(query, result_limit)
+            papers = self._search_arxiv(query, result_limit, min_year=min_year)
         else:
             return _err("INVALID_ENGINE", f"unknown engine: {engine}")
 
@@ -139,13 +140,45 @@ class AcademicToolsService:
 
         return _ok(doi=doi, abstract=None)
 
-    def _search_openalex(self, query: str, result_limit: int) -> list[dict[str, Any]]:
+    @staticmethod
+    def _paper_year_value(paper: dict[str, Any]) -> int:
+        raw_year = paper.get("year", "")
+        try:
+            return int(str(raw_year)[:4])
+        except Exception:
+            return -1
+
+    def _prefer_recent_papers(
+        self,
+        papers: list[dict[str, Any]],
+        result_limit: int,
+        min_year: Optional[int] = None,
+    ) -> list[dict[str, Any]]:
+        if not papers:
+            return []
+
+        ranked = sorted(
+            papers,
+            key=lambda paper: (
+                self._paper_year_value(paper),
+                int(paper.get("citation_count", 0) or 0),
+            ),
+            reverse=True,
+        )
+        if min_year is not None:
+            filtered = [paper for paper in ranked if self._paper_year_value(paper) >= int(min_year)]
+            if filtered:
+                return filtered[:result_limit]
+        return ranked[:result_limit]
+
+    def _search_openalex(self, query: str, result_limit: int, min_year: Optional[int] = None) -> list[dict[str, Any]]:
         mail = os.getenv("OPENALEX_MAIL_ADDRESS") or os.getenv("OPENALEX_EMAIL")
         headers = {"User-Agent": f"mailto:{mail}" if mail else "MyPaperWeb/1.0"}
+        fetch_limit = min(max(result_limit * 3, result_limit), 25)
         response = self.http_get(
             "https://api.openalex.org/works",
             headers=headers,
-            params={"search": query, "per_page": min(result_limit, 25)},
+            params={"search": query, "per_page": fetch_limit},
             timeout=30,
         )
         response.raise_for_status()
@@ -175,20 +208,21 @@ class AcademicToolsService:
                     "source": "openalex",
                 }
             )
-        return papers
+        return self._prefer_recent_papers(papers, result_limit, min_year=min_year)
 
     def _search_semanticscholar(
-        self, query: str, result_limit: int, s2_api_key: Optional[str]
+        self, query: str, result_limit: int, s2_api_key: Optional[str], min_year: Optional[int] = None
     ) -> list[dict[str, Any]]:
         headers = {"User-Agent": "MyPaperWeb/1.0", "Accept": "application/json"}
         if s2_api_key:
             headers["x-api-key"] = s2_api_key
+        fetch_limit = max(result_limit * 3, result_limit)
         response = self.http_get(
             "https://api.semanticscholar.org/graph/v1/paper/search",
             headers=headers,
             params={
                 "query": query,
-                "limit": result_limit,
+                "limit": fetch_limit,
                 "fields": "title,authors,venue,year,abstract,citationCount,paperId,url",
             },
             timeout=30,
@@ -216,12 +250,12 @@ class AcademicToolsService:
                     "source": "semanticscholar",
                 }
             )
-        return papers
+        return self._prefer_recent_papers(papers, result_limit, min_year=min_year)
 
-    def _search_arxiv(self, query: str, result_limit: int) -> list[dict[str, Any]]:
+    def _search_arxiv(self, query: str, result_limit: int, min_year: Optional[int] = None) -> list[dict[str, Any]]:
         response = self.http_get(
             "http://export.arxiv.org/api/query",
-            params={"search_query": query, "start": 0, "max_results": result_limit},
+            params={"search_query": query, "start": 0, "max_results": max(result_limit * 3, result_limit)},
             timeout=30,
         )
         response.raise_for_status()
@@ -251,7 +285,7 @@ class AcademicToolsService:
                     "source": "arxiv",
                 }
             )
-        return papers
+        return self._prefer_recent_papers(papers, result_limit, min_year=min_year)
 
     def _openalex_abstract_by_doi(self, doi: str) -> str:
         email = os.getenv("OPENALEX_EMAIL") or os.getenv("OPENALEX_MAIL_ADDRESS")

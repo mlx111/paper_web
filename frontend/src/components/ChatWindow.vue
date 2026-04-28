@@ -9,6 +9,9 @@
         v-for="message in messages"
         :key="message.id"
         :message="message"
+        @request-presentation="emit('request-presentation', $event)"
+        @request-presentation-quality="emit('request-presentation-quality', $event)"
+        @request-presentation-regenerate="emit('request-presentation-regenerate', $event)"
       />
     </div>
 
@@ -19,6 +22,8 @@
 <script setup>
 import { nextTick, onMounted, ref, watch } from 'vue';
 import ChatMessage from './ChatMessage.vue';
+
+const emit = defineEmits(['request-presentation', 'request-presentation-quality', 'request-presentation-regenerate']);
 
 const props = defineProps({
   messages: {

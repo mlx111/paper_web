@@ -137,12 +137,161 @@ class PresentationWorkflowServiceTest(unittest.TestCase):
             service = PresentationWorkflowService(storage_root=Path(tmp_dir))
             result = service.run_topic("presentation-123", "Enterprise RAG overview")
 
+            self.assertTrue(result["artifacts"]["manifest_path"].endswith("artifact_manifest.json"))
             self.assertTrue(result["plan_path"].endswith("plan.json"))
             self.assertTrue(result["manuscript_path"].endswith("manuscript.md"))
             self.assertTrue(result["pptx_path"].endswith("output.pptx"))
+            self.assertIn("artifacts", result)
+            self.assertIn("download_urls", result["artifacts"])
+            self.assertTrue(result["artifacts"]["download_urls"]["pptx"].endswith("/pptx"))
+            self.assertTrue(result["artifacts"]["download_urls"]["outline"].endswith("/outline"))
+            self.assertTrue(result["artifacts"]["download_urls"]["layout"].endswith("/layout"))
+            self.assertTrue(result["artifacts"]["download_urls"]["schema"].endswith("/schema"))
+            self.assertTrue(result["artifacts"]["download_urls"]["design"].endswith("/design"))
+            self.assertTrue(result["artifacts"]["download_urls"]["quality"].endswith("/quality"))
+            self.assertTrue(Path(result["artifacts"]["quality_report_path"]).exists())
+            self.assertIn("quality_report", result["artifacts"])
 
             plan = json.loads(Path(result["plan_path"]).read_text(encoding="utf-8"))
             self.assertEqual(plan["title"], "Enterprise RAG overview")
+
+    def test_run_topic_includes_saved_user_materials(self):
+        from agents.presentation_workflow_service import PresentationWorkflowService
+        from services.presentation_material_service import PresentationMaterialService
+
+        with TemporaryDirectory() as presentation_tmp, TemporaryDirectory() as materials_tmp:
+            material_service = PresentationMaterialService(storage_root=Path(materials_tmp))
+            material_service.save_material_entries(
+                "presentation-123",
+                [
+                    {
+                        "source_type": "paste",
+                        "material_type": "text",
+                        "title": "My outline",
+                        "content": "One, two, three",
+                    },
+                    {
+                        "source_type": "link",
+                        "material_type": "link",
+                        "title": "Reference link",
+                        "url": "https://example.com/reference",
+                    },
+                ],
+            )
+
+            service = PresentationWorkflowService(
+                storage_root=Path(presentation_tmp),
+                material_service=material_service,
+            )
+            result = service.run_topic("presentation-123", "Enterprise RAG overview")
+
+            self.assertEqual(result["artifacts"]["materials_count"], 2)
+            self.assertTrue(result["artifacts"]["materials_path"].endswith("materials.json"))
+            self.assertEqual(len(result["artifacts"]["materials"]), 2)
+            self.assertIn("用户素材", Path(result["manuscript_path"]).read_text(encoding="utf-8"))
+    def test_run_topic_writes_structured_outline_and_filters_noise(self):
+        from agents.presentation_workflow_service import PresentationWorkflowService
+
+        with TemporaryDirectory() as tmp_dir:
+            service = PresentationWorkflowService(storage_root=Path(tmp_dir))
+            service._web_search = lambda query: [
+                {
+                    "title": "Research process",
+                    "snippet": "bridge\nplan\ndraft\n{\"debug\": true}\n核心发现",
+                }
+            ]
+
+            result = service.run_topic("presentation-123", "Enterprise RAG overview")
+
+            outline_path = Path(result["artifacts"]["outline_path"])
+            self.assertTrue(outline_path.exists())
+            self.assertEqual(outline_path.name, "outline.json")
+
+            outline = json.loads(outline_path.read_text(encoding="utf-8"))
+            self.assertEqual(outline["title"], "Enterprise RAG overview")
+            self.assertGreaterEqual(len(outline["pages"]), 2)
+            first_page = outline["pages"][0]
+            self.assertIn("purpose", first_page)
+            self.assertIn("topic", first_page)
+            self.assertIn("indexes", first_page)
+            self.assertIn("images", first_page)
+            outline_text = json.dumps(outline, ensure_ascii=False)
+            self.assertNotIn("bridge", outline_text)
+            self.assertNotIn("{\"debug\": true}", outline_text)
+
+    def test_run_topic_persists_layout_selection(self):
+        from agents.presentation_workflow_service import PresentationWorkflowService
+
+        with TemporaryDirectory() as tmp_dir:
+            service = PresentationWorkflowService(storage_root=Path(tmp_dir))
+            service._web_search = lambda query: [
+                {"title": "One", "snippet": "Short"},
+                {"title": "Two", "snippet": "More text"},
+                {"title": "Three", "snippet": "Another item"},
+                {"title": "Four", "snippet": "One two three four five six seven"},
+            ]
+
+            result = service.run_topic("presentation-123", "Enterprise RAG overview")
+
+            layout_path = Path(result["artifacts"]["layout_path"])
+            self.assertTrue(layout_path.exists())
+            self.assertEqual(layout_path.name, "layout.json")
+
+            layout = json.loads(layout_path.read_text(encoding="utf-8"))
+            layouts = [page["layout"] for page in layout["pages"]]
+            self.assertIn("cover", layouts[0])
+            self.assertIn("layout_summary", layout)
+            self.assertEqual(result["artifacts"]["layout_path"], str(layout_path))
+            self.assertIn("layout", result["artifacts"]["layout"]["pages"][0])
+
+    def test_run_topic_persists_schema_generation(self):
+        from agents.presentation_workflow_service import PresentationWorkflowService
+
+        with TemporaryDirectory() as tmp_dir:
+            service = PresentationWorkflowService(storage_root=Path(tmp_dir))
+            service._web_search = lambda query: [
+                {"title": "One", "snippet": "Short"},
+                {"title": "Two", "snippet": "More text"},
+                {"title": "Three", "snippet": "Another item"},
+            ]
+
+            result = service.run_topic("presentation-123", "Enterprise RAG overview")
+
+            schema_path = Path(result["artifacts"]["schema_path"])
+            self.assertTrue(schema_path.exists())
+            self.assertEqual(schema_path.name, "schema.json")
+
+            schema = json.loads(schema_path.read_text(encoding="utf-8"))
+            self.assertEqual(schema["title"], "Enterprise RAG overview")
+            self.assertEqual(len(schema["pages"]), len(result["artifacts"]["layout"]["pages"]))
+            first_elements = schema["pages"][0]["elements"]
+            self.assertTrue(first_elements)
+            self.assertIn("type", first_elements[0])
+            self.assertIn("max_chars", first_elements[0])
+
+    def test_run_topic_persists_design_layer(self):
+        from agents.presentation_workflow_service import PresentationWorkflowService
+
+        with TemporaryDirectory() as tmp_dir:
+            service = PresentationWorkflowService(storage_root=Path(tmp_dir))
+            service._web_search = lambda query: [
+                {"title": "One", "snippet": "Short"},
+                {"title": "Two", "snippet": "More text"},
+                {"title": "Three", "snippet": "Another item"},
+                {"title": "Four", "snippet": "One two three four five six seven"},
+            ]
+
+            result = service.run_topic("presentation-123", "Enterprise RAG overview")
+
+            design_path = Path(result["artifacts"]["design_path"])
+            self.assertTrue(design_path.exists())
+            self.assertEqual(design_path.name, "design.json")
+
+            design = json.loads(design_path.read_text(encoding="utf-8"))
+            self.assertIn("theme", design)
+            self.assertEqual(design["theme"]["name"], "academic_research")
+            self.assertEqual(result["artifacts"]["design"]["pages"][0]["role"], "hero")
+            self.assertEqual(result["artifacts"]["design"]["pages"][-1]["emphasis"], "high")
 
 
 if __name__ == "__main__":

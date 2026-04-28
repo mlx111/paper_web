@@ -12,7 +12,23 @@
     />
 
     <main class="main-content">
-      <ChatWindow :messages="currentMessages" :centered="centered">
+      <details v-if="activeModule === 'presentation'" class="presentation-materials-accordion">
+        <summary class="presentation-materials-summary">
+          <span class="presentation-materials-summary-title">素材</span>
+          <span class="presentation-materials-summary-hint">上传文件、粘贴要点或链接，默认折叠，不打断对话</span>
+        </summary>
+        <PresentationMaterialsPanel
+          :session-id="currentSessionId"
+        />
+      </details>
+
+      <ChatWindow
+        :messages="currentMessages"
+        :centered="centered"
+        @request-presentation="generatePresentationFromResearch"
+        @request-presentation-quality="checkPresentationQuality"
+        @request-presentation-regenerate="regeneratePresentationFromArtifacts"
+      >
         <template #input>
           <ChatInput
             v-model="messageInput"
@@ -48,16 +64,19 @@ import ChatInput from './components/ChatInput.vue';
 import ChatWindow from './components/ChatWindow.vue';
 import LoadingOverlay from './components/LoadingOverlay.vue';
 import NotificationToast from './components/NotificationToast.vue';
+import PresentationMaterialsPanel from './components/PresentationMaterialsPanel.vue';
 import Sidebar from './components/Sidebar.vue';
 import {
   clearChatSession,
   clearFileSession,
   clearPresentationSession,
   clearResearchSession,
+  checkPresentationQuality as requestPresentationQuality,
   loadFileSessionHistory,
   loadPresentationSessionHistory,
   loadResearchSessionHistory,
   loadSessionHistory,
+  regeneratePresentation as requestPresentationRegeneration,
   sendFileChat,
   sendPresentationChat,
   sendQuickChat,
@@ -237,6 +256,9 @@ function appendMessage(payload, moduleKey = activeModule.value) {
     imageMap: payload?.imageMap || payload?.image_map || {},
     sources: Array.isArray(payload?.sources) ? payload.sources : [],
     debugEntries: Array.isArray(payload?.debugEntries) ? payload.debugEntries : [],
+    artifacts: payload?.artifacts || {},
+    reportPath: payload?.reportPath || payload?.report_path || '',
+    researchSessionId: payload?.researchSessionId || payload?.research_session_id || '',
   });
   state.currentMessages.push(message);
   return message.id;
@@ -372,7 +394,7 @@ async function sendQuickMessage(question) {
   }
 }
 
-async function sendStreamingMessage(question) {
+async function sendStreamingMessage(question, extraRequest = {}) {
   const assistantId = appendMessage({
     type: 'assistant',
     content: '',
@@ -383,6 +405,7 @@ async function sendStreamingMessage(question) {
   let fullResponse = '';
   let imageMap = {};
   let sources = [];
+  let artifacts = {};
 
   function formatDebugNodeLabel(nodeName) {
     const mapping = {
@@ -427,6 +450,7 @@ async function sendStreamingMessage(question) {
     await currentModule.value.sendStream({
       sessionId: currentSessionId.value,
       question,
+      ...extraRequest,
       onEvent(payload) {
         if (!payload || typeof payload !== 'object') {
           return;
@@ -450,11 +474,20 @@ async function sendStreamingMessage(question) {
           const answer = payload.data?.answer || fullResponse || '(no answer)';
           imageMap = payload.data?.image_map || payload.data?.imageMap || imageMap;
           sources = payload.data?.sources || sources;
+          artifacts = payload.data?.artifacts || payload.data?.artifact || artifacts;
           fullResponse = answer;
           updateMessage(assistantId, {
             content: answer,
             imageMap,
             sources,
+            artifacts,
+            reportPath: payload.data?.report_path || payload.data?.reportPath || artifacts?.report_path || '',
+            researchSessionId:
+              payload.data?.research_session_id ||
+              payload.data?.researchSessionId ||
+              artifacts?.research_session_id ||
+              artifacts?.session_id ||
+              '',
             streaming: false,
           });
           return;
@@ -470,6 +503,7 @@ async function sendStreamingMessage(question) {
       content: fullResponse || '(no answer)',
       imageMap,
       sources,
+      artifacts,
       streaming: false,
     });
     persistConversation();
@@ -480,6 +514,193 @@ async function sendStreamingMessage(question) {
     });
     persistConversation();
     showNotification(`流式响应失败：${error.message}`, 'error');
+  }
+}
+
+async function generatePresentationFromResearch(payload = {}) {
+  const artifacts = payload?.artifacts || {};
+  const researchSessionId =
+    payload?.researchSessionId ||
+    payload?.research_session_id ||
+    artifacts?.research_session_id ||
+    artifacts?.session_id ||
+    '';
+
+  if (!researchSessionId) {
+    showNotification('未找到可用于生成 PPT 的研究会话。', 'warning');
+    return;
+  }
+
+  const topic =
+    payload?.topic ||
+    payload?.content ||
+    artifacts?.question ||
+    '基于本研究生成 PPT';
+
+  activeModule.value = 'presentation';
+  const state = currentState.value;
+
+  if (state.isStreaming) {
+    return;
+  }
+
+  appendMessage(
+    {
+      type: 'user',
+      content: '基于本研究生成 PPT',
+    },
+    'presentation',
+  );
+  persistConversation('presentation');
+  state.isStreaming = true;
+
+  try {
+    await sendStreamingMessage('', {
+      researchSessionId,
+      topic,
+    });
+    showNotification('已切换到 PPT 生成。', 'success');
+  } finally {
+    state.isStreaming = false;
+  }
+}
+
+async function checkPresentationQuality(payload = {}) {
+  const artifacts = payload?.artifacts || {};
+  const sessionId = payload?.sessionId || artifacts?.session_id || currentSessionId.value;
+
+  if (!sessionId) {
+    showNotification('未找到可检查的 PPT 会话。', 'warning');
+    return;
+  }
+
+  activeModule.value = 'presentation';
+  const state = currentState.value;
+  if (state.isStreaming) {
+    return;
+  }
+
+  const actionLabel = '检查当前 PPT 质量';
+  const loadingMessageId = appendMessage(
+    {
+      type: 'assistant',
+      content: '正在检查 PPT 质量...',
+      loading: true,
+      streaming: true,
+      artifacts: {
+        session_id: sessionId,
+      },
+    },
+    'presentation',
+  );
+
+  persistConversation('presentation');
+  state.isStreaming = true;
+
+  try {
+    const report = await requestPresentationQuality(sessionId);
+    const passed = Boolean(report?.passed);
+    const issues = Array.isArray(report?.issues) ? report.issues : [];
+    const warnings = Array.isArray(report?.warnings) ? report.warnings : [];
+    const summary = passed ? '通过' : '未通过';
+    const qualityContent = `PPT 质量检查已完成，结果：${summary}。问题 ${issues.length} 项，警告 ${warnings.length} 项。`;
+
+    updateMessage(loadingMessageId, {
+      content: qualityContent,
+      loading: false,
+      streaming: false,
+      artifacts: {
+        session_id: sessionId,
+        quality_report: report,
+        download_urls: {
+          quality: `/presentation/download/${encodeURIComponent(sessionId)}/quality`,
+          ...(artifacts?.download_urls || artifacts?.downloadUrls || {}),
+        },
+      },
+    }, 'presentation');
+    persistConversation('presentation');
+    showNotification(actionLabel, 'success');
+  } catch (error) {
+    updateMessage(
+      loadingMessageId,
+      {
+        content: `PPT 质量检查失败：${error.message}`,
+        loading: false,
+        streaming: false,
+      },
+      'presentation',
+    );
+    persistConversation('presentation');
+    showNotification(`PPT 质量检查失败：${error.message}`, 'error');
+  } finally {
+    state.isStreaming = false;
+  }
+}
+
+async function regeneratePresentationFromArtifacts(payload = {}) {
+  const artifacts = payload?.artifacts || {};
+  const sessionId = payload?.sessionId || artifacts?.session_id || currentSessionId.value;
+
+  if (!sessionId) {
+    showNotification('未找到可重新生成的 PPT 会话。', 'warning');
+    return;
+  }
+
+  activeModule.value = 'presentation';
+  const state = currentState.value;
+  if (state.isStreaming) {
+    return;
+  }
+
+  const loadingMessageId = appendMessage(
+    {
+      type: 'assistant',
+      content: '正在基于已保存工件重新生成 PPT...',
+      loading: true,
+      streaming: true,
+      artifacts: {
+        session_id: sessionId,
+      },
+    },
+    'presentation',
+  );
+
+  persistConversation('presentation');
+  state.isStreaming = true;
+
+  try {
+    const result = await requestPresentationRegeneration(sessionId);
+    const responseArtifacts = result?.artifacts || {};
+    updateMessage(
+      loadingMessageId,
+      {
+        content: result?.answer || 'PPT 已重新生成。',
+        loading: false,
+        streaming: false,
+        artifacts: {
+          ...artifacts,
+          ...responseArtifacts,
+          session_id: sessionId,
+        },
+      },
+      'presentation',
+    );
+    persistConversation('presentation');
+    showNotification('PPT 已重新生成。', 'success');
+  } catch (error) {
+    updateMessage(
+      loadingMessageId,
+      {
+        content: `PPT 重新生成失败：${error.message}`,
+        loading: false,
+        streaming: false,
+      },
+      'presentation',
+    );
+    persistConversation('presentation');
+    showNotification(`PPT 重新生成失败：${error.message}`, 'error');
+  } finally {
+    state.isStreaming = false;
   }
 }
 
