@@ -71,13 +71,17 @@ def academic_search_papers(
     query: str,
     result_limit: int = 5,
     engine: str = "openalex",
+    min_year: int | None = None,
+    max_papers: int | None = None,
 ) -> str:
     try:
-        capped_limit = max(1, min(int(result_limit or 5), 3))
+        effective_limit = max_papers if max_papers is not None else result_limit
+        capped_limit = max(1, min(int(effective_limit or 5), 10))
         result = academic_tools_service.search_papers(
             query=query,
             result_limit=capped_limit,
             engine=engine,
+            min_year=min_year,
         )
         return _dump(_compact_search_payload(result))
     except Exception as exc:

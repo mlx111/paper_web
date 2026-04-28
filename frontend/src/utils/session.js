@@ -35,6 +35,7 @@ export function createMessageId() {
 export function normalizeMessage(message = {}) {
   const type = message.type || message.role || 'assistant';
   const content = message.content == null ? '' : String(message.content);
+  const artifacts = message.artifacts && typeof message.artifacts === 'object' ? message.artifacts : {};
 
   return {
     id: message.id || createMessageId(),
@@ -45,7 +46,15 @@ export function normalizeMessage(message = {}) {
     streaming: Boolean(message.streaming),
     imageMap: message.imageMap || message.image_map || {},
     sources: Array.isArray(message.sources) ? message.sources : [],
-    debugEntries: Array.isArray(message.debugEntries) ? message.debugEntries : []
+    debugEntries: Array.isArray(message.debugEntries) ? message.debugEntries : [],
+    artifacts,
+    reportPath: message.reportPath || message.report_path || artifacts.report_path || '',
+    researchSessionId:
+      message.researchSessionId ||
+      message.research_session_id ||
+      artifacts.research_session_id ||
+      artifacts.session_id ||
+      '',
   };
 }
 

@@ -172,11 +172,28 @@ async def get_session_info(session_id: str) -> SessionInfoResponse:
     """Return the isolated research history for one session."""
     try:
         history = research_workflow_service.get_session_history(session_id)
+        artifacts = research_workflow_service._summarize_research_artifacts(session_id)
         return SessionInfoResponse(
             session_id=session_id,
             message_count=len(history),
             history=history,
+            artifacts=artifacts,
         )
     except Exception as exc:
         logger.error(f"[research {session_id}] get_session_info failed: {exc}")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.post("/report/regenerate", response_model=ApiResponse)
+async def regenerate_report(request: ClearRequest):
+    """Regenerate the research report from saved artifacts."""
+    try:
+        artifacts = research_workflow_service.regenerate_report(request.session_id)
+        return ApiResponse(
+            status="success",
+            message="研究报告已重新生成",
+            data=artifacts,
+        )
+    except Exception as exc:
+        logger.error(f"[research {request.session_id}] regenerate report failed: {exc}")
         raise HTTPException(status_code=500, detail=str(exc))

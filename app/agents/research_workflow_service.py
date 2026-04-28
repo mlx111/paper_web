@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import ssl
+from datetime import datetime, timezone
 import traceback
 import urllib.error
 import urllib.parse
@@ -16,7 +17,12 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from langchain_core.tools import BaseTool, tool
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
-from loguru import logger
+try:
+    from loguru import logger
+except ImportError:  # pragma: no cover - fallback for minimal test environments
+    import logging
+
+    logger = logging.getLogger(__name__)
 from pydantic import BaseModel, Field
 
 from models.factory import qwen_model
@@ -330,6 +336,7 @@ class ResearchWorkflowService:
     """
 
     module_name: str = "research"
+    report_version: str = "v2.3"
 
     def __init__(self, streaming: bool = False):
         # 第 1 步：初始化模型与结构化输出包装器。
@@ -405,6 +412,7 @@ class ResearchWorkflowService:
             "learnings": session_dir / "learnings.json",
             "sources": session_dir / "sources.json",
             "final_report": session_dir / "final_report.md",
+            "report_manifest": session_dir / "report_manifest.json",
         }
 
     @staticmethod
@@ -416,6 +424,15 @@ class ResearchWorkflowService:
     def _write_text(path: Path, content: str) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
+
+    @staticmethod
+    def _read_json(path: Path, default: Any) -> Any:
+        if not path.exists():
+            return default
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return default
 
     def _extract_text(self, message: BaseMessage) -> str:
         content = getattr(message, "content", "")
@@ -493,8 +510,17 @@ class ResearchWorkflowService:
             "branch_sources": list(branch.get("branch_sources") or []),
         }
 
-    def _initial_research_branches(self, refined_query: str) -> list[dict[str, Any]]:
+    def _preferred_recent_year_floor(self) -> int:
+        return max(2024, datetime.now(timezone.utc).year - 2)
+
+    def _recent_year_suffix(self) -> str:
+        current_year = datetime.now(timezone.utc).year
+        year_floor = self._preferred_recent_year_floor()
+        return " ".join(str(year) for year in range(year_floor, current_year + 1))
+
+    def _recent_research_branches(self, refined_query: str) -> list[dict[str, Any]]:
         query = (refined_query or "研究主题").strip()
+        year_suffix = self._recent_year_suffix()
         templates = [
             ("理论基础与关键概念", "梳理核心概念、问题定义和技术脉络"),
             ("最新方法与代表论文", "检索近年代表性论文、方法和实验结论"),
@@ -503,18 +529,22 @@ class ResearchWorkflowService:
         return [
             self._normalize_branch(
                 {
-                    "branch_query": f"{query}：{topic}",
-                    "branch_goal": f"{goal}。",
+                    "branch_query": f"{query} {topic} {year_suffix}".strip(),
+                    "branch_goal": f"{goal}。优先近三年（2024-2026）文献",
                 },
                 index=index,
             )
             for index, (topic, goal) in enumerate(templates)
         ]
 
-    def _academic_search(self, query: str, max_papers: int = 3) -> Any:
+    def _academic_search(self, query: str, max_papers: int = 3, min_year: int | None = None) -> Any:
+        year_floor = min_year if min_year is not None else self._preferred_recent_year_floor()
         if hasattr(academic_search_papers, "invoke"):
-            return academic_search_papers.invoke({"query": query, "max_papers": max_papers})
-        return academic_search_papers(query=query, max_papers=max_papers)
+            return academic_search_papers.invoke({"query": query, "max_papers": max_papers, "min_year": year_floor})
+        try:
+            return academic_search_papers(query=query, max_papers=max_papers, min_year=year_floor)
+        except TypeError:
+            return academic_search_papers(query=query, max_papers=max_papers)
 
     @staticmethod
     def _normalize_sources(raw_sources: Any, branch: dict[str, Any]) -> list[dict[str, Any]]:
@@ -613,6 +643,149 @@ class ResearchWorkflowService:
             "sources_path": str(paths["sources"]),
         }
 
+    def _build_report_manifest(
+        self,
+        session_id: str,
+        question: str,
+        research_plan: str,
+        final_answer: str,
+        research_branches: list[dict[str, Any]],
+        aggregated_learnings: list[str],
+        branch_sources: list[dict[str, Any]],
+        artifacts: dict[str, str],
+    ) -> dict[str, Any]:
+        return {
+            "report_version": self.report_version,
+            "session_id": session_id,
+            "question": question,
+            "research_plan": research_plan,
+            "final_answer": final_answer,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "branch_count": len(research_branches or []),
+            "source_count": len(branch_sources or []),
+            "learning_count": len(aggregated_learnings or []),
+            "files": {
+                "clarification": artifacts.get("clarification_path", ""),
+                "refined_query": artifacts.get("refined_query_path", ""),
+                "branches": artifacts.get("branches_path", ""),
+                "learnings": artifacts.get("learnings_path", ""),
+                "sources": artifacts.get("sources_path", ""),
+                "final_report": artifacts.get("report_path", ""),
+                "manifest": artifacts.get("manifest_path", ""),
+            },
+        }
+
+    def _load_research_artifacts(self, session_id: str) -> dict[str, Any]:
+        paths = self._build_artifact_paths(session_id)
+        return {
+            "paths": {key: str(value) for key, value in paths.items()},
+            "clarification": self._read_json(paths["clarification"], {}),
+            "refined_query": self._read_json(paths["refined_query"], {}),
+            "branches": self._read_json(paths["branches"], {"branches": []}),
+            "learnings": self._read_json(paths["learnings"], {"learnings": []}),
+            "sources": self._read_json(paths["sources"], {"sources": []}),
+            "final_report": paths["final_report"].read_text(encoding="utf-8") if paths["final_report"].exists() else "",
+            "manifest": self._read_json(paths["report_manifest"], {}),
+        }
+
+    def reload_research_artifacts(self, session_id: str) -> dict[str, Any]:
+        return self._load_research_artifacts(session_id)
+
+    def _summarize_research_artifacts(self, session_id: str) -> dict[str, Any]:
+        artifacts = self._load_research_artifacts(session_id)
+        manifest = artifacts.get("manifest") or {}
+        branches = list((artifacts.get("branches") or {}).get("branches") or [])
+        sources = list((artifacts.get("sources") or {}).get("sources") or [])
+        report_path = str(artifacts.get("paths", {}).get("final_report") or "")
+        manifest_path = str(artifacts.get("paths", {}).get("report_manifest") or "")
+        return {
+            "research_session_id": session_id,
+            "report_version": str(manifest.get("report_version") or self.report_version),
+            "report_path": report_path,
+            "manifest_path": manifest_path,
+            "latest_report_path": report_path,
+            "latest_manifest_path": manifest_path,
+            "has_branch_data": bool(branches),
+            "branch_count": int(manifest.get("branch_count") or len(branches)),
+            "source_count": int(manifest.get("source_count") or len(sources)),
+            "learning_count": int(manifest.get("learning_count") or len((artifacts.get("learnings") or {}).get("learnings") or [])),
+            "can_generate_ppt": bool(report_path),
+            "question": str(manifest.get("question") or artifacts.get("clarification", {}).get("question") or ""),
+        }
+
+    def _write_report_manifest(
+        self,
+        session_id: str,
+        question: str,
+        research_plan: str,
+        final_answer: str,
+        research_branches: list[dict[str, Any]],
+        aggregated_learnings: list[str],
+        branch_sources: list[dict[str, Any]],
+        artifacts: dict[str, str],
+    ) -> dict[str, str]:
+        paths = self._build_artifact_paths(session_id)
+        manifest = self._build_report_manifest(
+            session_id=session_id,
+            question=question,
+            research_plan=research_plan,
+            final_answer=final_answer,
+            research_branches=research_branches,
+            aggregated_learnings=aggregated_learnings,
+            branch_sources=branch_sources,
+            artifacts=artifacts,
+        )
+        self._write_json(paths["report_manifest"], manifest)
+        return {"manifest_path": str(paths["report_manifest"])}
+
+    def regenerate_report(self, session_id: str) -> dict[str, str]:
+        artifacts = self._load_research_artifacts(session_id)
+        clarification = artifacts.get("clarification") or {}
+        refined = artifacts.get("refined_query") or {}
+        manifest = artifacts.get("manifest") or {}
+        research_branches = list((artifacts.get("branches") or {}).get("branches") or [])
+        aggregated_learnings = list((artifacts.get("learnings") or {}).get("learnings") or [])
+        branch_sources = list((artifacts.get("sources") or {}).get("sources") or [])
+        question = str(manifest.get("question") or clarification.get("question") or "")
+        research_plan = str(manifest.get("research_plan") or "")
+        final_answer = str(manifest.get("final_answer") or "")
+        final_report = self._build_final_report_markdown(
+            question=question,
+            refined_query=str(refined.get("refined_query") or ""),
+            plan_text=research_plan,
+            final_answer=final_answer,
+            clarification=str(clarification.get("clarification_summary") or ""),
+            questions=list(clarification.get("clarification_questions") or []),
+            research_branches=research_branches,
+            aggregated_learnings=aggregated_learnings,
+            branch_sources=branch_sources,
+        )
+        paths = self._build_artifact_paths(session_id)
+        self._write_text(paths["final_report"], final_report)
+        artifacts_map = {
+            "clarification_path": str(paths["clarification"]),
+            "refined_query_path": str(paths["refined_query"]),
+            "branches_path": str(paths["branches"]),
+            "learnings_path": str(paths["learnings"]),
+            "sources_path": str(paths["sources"]),
+            "report_path": str(paths["final_report"]),
+            "manifest_path": str(paths["report_manifest"]),
+        }
+        self._write_json(
+            paths["report_manifest"],
+            self._build_report_manifest(
+                session_id=session_id,
+                question=question,
+                research_plan=research_plan,
+                final_answer=final_answer,
+                research_branches=research_branches,
+                aggregated_learnings=aggregated_learnings,
+                branch_sources=branch_sources,
+                artifacts=artifacts_map,
+            ),
+        )
+        return artifacts_map
+
     def _build_final_report_markdown(
         self,
         question: str,
@@ -639,7 +812,9 @@ class ResearchWorkflowService:
         if questions:
             lines.extend(["## 澄清问题建议", *[f"- {item}" for item in questions], ""])
         if plan_text:
-            lines.extend(["## 研究计划", plan_text, ""])
+            plan_lines = [line.rstrip() for line in str(plan_text).splitlines() if line.strip()]
+            if plan_lines:
+                lines.extend(["## 研究计划", *[f"- {line}" for line in plan_lines], ""])
         if research_branches:
             lines.extend(["## 研究方向"])
             for branch in research_branches:
@@ -716,10 +891,29 @@ class ResearchWorkflowService:
             aggregated_learnings=aggregated_learnings,
             branch_sources=branch_sources,
         )
+        manifest_artifacts = self._write_report_manifest(
+            session_id=session_id,
+            question=question,
+            research_plan=research_plan,
+            final_answer=final_answer,
+            research_branches=research_branches,
+            aggregated_learnings=aggregated_learnings,
+            branch_sources=branch_sources,
+            artifacts={
+                "clarification_path": str(paths["clarification"]),
+                "refined_query_path": str(paths["refined_query"]),
+                "branches_path": branch_artifacts["branches_path"],
+                "learnings_path": branch_artifacts["learnings_path"],
+                "sources_path": branch_artifacts["sources_path"],
+                "report_path": str(paths["final_report"]),
+                "manifest_path": str(paths["report_manifest"]),
+            },
+        )
         return {
             "clarification_path": str(paths["clarification"]),
             "refined_query_path": str(paths["refined_query"]),
             "report_path": str(paths["final_report"]),
+            **manifest_artifacts,
             **branch_artifacts,
         }
 
@@ -778,7 +972,7 @@ class ResearchWorkflowService:
 
         def expand_node(state: ResearchState) -> dict[str, Any]:
             refined_query = state.get("refined_query", "").strip()
-            branches = self._initial_research_branches(refined_query)
+            branches = self._recent_research_branches(refined_query)
             summary = "\n".join(
                 f"- {branch['branch_id']}: {branch['branch_goal']} ({branch['branch_query']})"
                 for branch in branches
@@ -1100,16 +1294,18 @@ class ResearchWorkflowService:
     def get_session_history(self, session_id: str) -> list[dict[str, Any]]:
         try:
             messages = self._history_messages(session_id)
+            artifacts_summary = self._summarize_research_artifacts(session_id)
             history: list[dict[str, Any]] = []
-            for msg in messages:
+            for index, msg in enumerate(messages):
                 role = "user" if isinstance(msg, HumanMessage) else "assistant"
-                history.append(
-                    {
-                        "role": role,
-                        "content": self._extract_text(msg),
-                        "timestamp": getattr(msg, "timestamp", None),
-                    }
-                )
+                entry = {
+                    "role": role,
+                    "content": self._extract_text(msg),
+                    "timestamp": getattr(msg, "timestamp", None),
+                }
+                if index == len(messages) - 1 and role == "assistant":
+                    entry["artifacts"] = artifacts_summary
+                history.append(entry)
             return history
         except Exception as exc:
             logger.error("[research {}] get_session_history failed: {}", session_id, exc)

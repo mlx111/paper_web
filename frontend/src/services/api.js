@@ -144,6 +144,19 @@ async function postFormData(path, formData) {
   return response.json();
 }
 
+async function postFormDataEnvelope(path, formData) {
+  const response = await fetch(buildUrl(path), {
+    method: 'POST',
+    body: formData
+  });
+
+  if (!response.ok) {
+    throw new Error(`HTTP error: ${response.status}`);
+  }
+
+  return response.json();
+}
+
 export async function sendQuickChat({ sessionId, question }) {
   try {
     return await postJson('/agent/chat', {
@@ -224,11 +237,12 @@ export async function clearResearchSession(sessionId) {
   }
 }
 
-export async function sendPresentationChat({ sessionId, question, topic, targetPages }) {
+export async function sendPresentationChat({ sessionId, question, topic, researchSessionId, targetPages }) {
   try {
     return await postJson('/presentation/chat', {
       sessionId,
       topic: topic || question,
+      researchSessionId: researchSessionId || undefined,
       targetPages
     });
   } catch (error) {
@@ -236,11 +250,12 @@ export async function sendPresentationChat({ sessionId, question, topic, targetP
   }
 }
 
-export async function streamPresentationChat({ sessionId, question, topic, targetPages, onEvent }) {
+export async function streamPresentationChat({ sessionId, question, topic, researchSessionId, targetPages, onEvent }) {
   try {
     await postStream('/presentation/chat_stream', {
       sessionId,
       topic: topic || question,
+      researchSessionId: researchSessionId || undefined,
       targetPages
     }, onEvent);
   } catch (error) {
@@ -263,6 +278,26 @@ export async function clearPresentationSession(sessionId) {
     });
   } catch (error) {
     throw new Error(getErrorMessage(error, 'Failed to clear presentation session.'));
+  }
+}
+
+export async function checkPresentationQuality(sessionId) {
+  try {
+    return await postJson('/presentation/quality', {
+      sessionId
+    });
+  } catch (error) {
+    throw new Error(getErrorMessage(error, 'Presentation quality check failed.'));
+  }
+}
+
+export async function regeneratePresentation(sessionId) {
+  try {
+    return await postJson('/presentation/regenerate', {
+      sessionId
+    });
+  } catch (error) {
+    throw new Error(getErrorMessage(error, 'Presentation regeneration failed.'));
   }
 }
 
@@ -324,5 +359,36 @@ export async function uploadTempFile(file, sessionId) {
     return await postFormData('/file/temp-upload', formData);
   } catch (error) {
     throw new Error(getErrorMessage(error, 'Temporary file upload failed.'));
+  }
+}
+
+export async function loadPresentationMaterials(sessionId) {
+  try {
+    return await getJson(`/presentation/materials/${encodeURIComponent(sessionId)}`);
+  } catch (error) {
+    throw new Error(getErrorMessage(error, 'Failed to load presentation materials.'));
+  }
+}
+
+export async function savePresentationMaterials({ sessionId, materials }) {
+  try {
+    return await postJson('/presentation/materials', {
+      sessionId,
+      materials
+    });
+  } catch (error) {
+    throw new Error(getErrorMessage(error, 'Failed to save presentation materials.'));
+  }
+}
+
+export async function uploadPresentationMaterial(file, sessionId) {
+  try {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('session_id', sessionId);
+    const result = await postFormDataEnvelope('/presentation/materials/upload', formData);
+    return result?.data || result || {};
+  } catch (error) {
+    throw new Error(getErrorMessage(error, 'Presentation material upload failed.'));
   }
 }
