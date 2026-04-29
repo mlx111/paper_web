@@ -1,59 +1,5 @@
 [
     {
-        "id": "router_001",
-        "mode": "router",
-        "question": "帮我总结一下这篇论文的核心贡献",
-        "expected_route": "deep",
-        "expected_tools": [],
-        "expected_keywords": [
-            "核心贡献",
-            "总结",
-            "分析"
-        ],
-        "expected_evidence": [
-            "paper",
-            "summary"
-        ],
-        "expected_answer_type": "analysis",
-        "difficulty": "easy",
-        "must_include": [
-            "分析"
-        ],
-        "must_not_include": [
-            "我不知道"
-        ],
-        "expected_notes_used": false,
-        "expected_context_mode": "router",
-        "description": "测试 router 是否将论文总结类问题分到 deep。"
-    },
-    {
-        "id": "router_002",
-        "mode": "router",
-        "question": "今天北京天气怎么样",
-        "expected_route": "quick",
-        "expected_tools": [
-            "web_search"
-        ],
-        "expected_keywords": [
-            "北京",
-            "天气"
-        ],
-        "expected_evidence": [
-            "search"
-        ],
-        "expected_answer_type": "fact",
-        "difficulty": "easy",
-        "must_include": [
-            "北京"
-        ],
-        "must_not_include": [
-            "长篇分析"
-        ],
-        "expected_notes_used": false,
-        "expected_context_mode": "router",
-        "description": "测试 router 是否将简单事实查询分到 quick。"
-    },
-    {
         "id": "quick_001",
         "mode": "quick",
         "question": "什么是上下文工程？",

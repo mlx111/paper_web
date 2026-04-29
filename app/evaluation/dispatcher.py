@@ -2,19 +2,15 @@ from __future__ import annotations
 
 from agents.deep_agent_service import deep_agent_service
 from agents.quick_agent_service import quick_agent_service
-from agents.router_agent_service import agent_service as router_agent_service
 
 
 def get_target_agent(mode: str):
     """
-    根据 mode 选择被测 agent。
+    Select the agent under evaluation.
 
-    router:
-        走路由器，由它分发到 quick / deep
-    quick:
-        直接测 quick agent
-    deep:
-        直接测 deep agent
+    The UI now routes explicitly by module:
+    quick chat uses quick_agent, and file Q&A uses the deep/file chain.
+    Unknown evaluation modes fall back to deep for compatibility.
     """
     mode = (mode or "").strip().lower()
 
@@ -22,4 +18,4 @@ def get_target_agent(mode: str):
         return quick_agent_service
     if mode == "deep":
         return deep_agent_service
-    return router_agent_service
+    return deep_agent_service

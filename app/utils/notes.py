@@ -66,25 +66,6 @@ def _filter_notes(
     return filtered
 
 
-def get_router_notes(session_id: str) -> list[dict[str, Any]]:
-    """
-    Return a lightweight note set for router decisions.
-
-    Router only needs a few high-signal notes, so we keep it narrow:
-    - decision
-    - constraint
-    - summary
-    """
-    service = get_notes(session_id)
-    notes = service.list_notes()
-    return _filter_notes(
-        notes,
-        kinds={"decision", "constraint", "summary"},
-        min_importance=0.6,
-        limit=2,
-    )
-
-
 HIGH_VALUE_NOTE_KINDS = {"decision", "constraint", "summary", "preference", "blocker", "memory"}
 LOW_VALUE_NOTE_PATTERNS = (
     "thanks",

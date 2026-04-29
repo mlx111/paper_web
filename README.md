@@ -42,10 +42,10 @@ flowchart LR
     User[User] --> Frontend[Vue 3 + Vite Frontend]
     Frontend --> API[FastAPI Backend]
 
-    API --> AgentRouter[API Routers]
-    AgentRouter --> Chat[Chat Module / Quick Agent]
-    AgentRouter --> FileQA[File Q&A Module / Deep Agent]
-    AgentRouter --> Research[Research Workflow]
+    API --> APIHandlers[API Routers]
+    APIHandlers --> Chat[Chat Module / Quick Agent]
+    APIHandlers --> FileQA[File Q&A Module / Deep Agent]
+    APIHandlers --> Research[Research Workflow]
 
     FileQA --> Context[ContextBuilder]
     Research --> ResearchGraph[LangGraph Research Graph]
@@ -56,7 +56,7 @@ flowchart LR
     Context --> Notes[(Session Notes)]
     Context --> History[(Session History)]
 
-    AgentRouter --> Upload[Document Upload]
+    APIHandlers --> Upload[Document Upload]
     Upload --> Parser[Document Splitter / Image Parser]
     Parser --> ImageStore[(Local Image Store)]
     Parser --> ChunkMap[(chunk_images.json)]

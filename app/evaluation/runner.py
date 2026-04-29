@@ -5,10 +5,6 @@ import json
 import time
 from typing import Any
 
-from agents.deep_agent_service import deep_agent_service
-from agents.quick_agent_service import quick_agent_service
-from agents.router_agent_service import agent_service as router_agent_service
-
 from .dispatcher import get_target_agent
 from .loader import load_cases
 from .metrics import (
@@ -27,26 +23,20 @@ from .types import EvaluationCase, EvaluationResult
 
 class EvaluationRunner:
     """
-    评估跑批器。
+    Runs evaluation cases against explicit quick/deep agents.
 
-    负责把测试集逐条送进被测 agent，
-    并收集流式输出、tool_calls、路由决策、上下文元信息、耗时和评分。
+    Automatic routing evaluation was removed because the UI now chooses the
+    target chain directly by module.
     """
 
     def __init__(self, cases_path: str):
         self.cases_path = cases_path
 
     def _estimate_tokens(self, text: str) -> int:
-        """
-        用字符数粗略估算 token 数。
-        """
         text = text or ""
         return max(0, len(text) // 2)
 
     def _extract_tools(self, raw_result: Any) -> list[str]:
-        """
-        从非流式结果中提取工具名。
-        """
         tools: list[str] = []
 
         if isinstance(raw_result, dict):
@@ -63,9 +53,6 @@ class EvaluationRunner:
         return list(dict.fromkeys(tools))
 
     def _extract_tools_from_stream_event(self, event: dict[str, Any]) -> list[str]:
-        """
-        从流式事件里提取工具调用名称。
-        """
         tools: list[str] = []
         event_type = str(event.get("type", "") or "").strip().lower()
         if event_type != "tool_call":
@@ -80,9 +67,6 @@ class EvaluationRunner:
         return tools
 
     async def _invoke_with_stream(self, agent: Any, question: str, session_id: str) -> tuple[str, list[str], dict[str, Any]]:
-        """
-        优先走流式接口，边生成边收集 tool_calls 和 context meta。
-        """
         answer_parts: list[str] = []
         tool_names: list[str] = []
         stream_events: list[dict[str, Any]] = []
@@ -151,62 +135,24 @@ class EvaluationRunner:
         }
         return answer_text, list(dict.fromkeys(tool_names)), meta
 
-    async def _resolve_router_route(self, question: str, session_id: str) -> tuple[str, dict[str, Any]]:
-        """
-        Router 模式下，先单独拿到路由决策。
-        """
-        decision = await router_agent_service.route_query(question, session_id)
-        route = getattr(decision, "route", "") or ""
-        route = str(route).strip().lower()
-        if route not in ("quick", "deep"):
-            route = "deep"
-
-        reason = getattr(decision, "reason", "")
-        if hasattr(decision, "model_dump"):
-            decision_payload = decision.model_dump()
-        elif hasattr(decision, "dict"):
-            decision_payload = decision.dict()
-        else:
-            decision_payload = {"route": route, "reason": reason}
-
-        return route, {
-            "router_reason": reason,
-            "router_decision": decision_payload,
-            "context_mode": "router",
-            "context_trace": {},
-            "routing_hints": [],
-        }
-
     async def _run_one(self, case: EvaluationCase) -> EvaluationResult:
-        """
-        跑单条 case。
-        """
         agent = get_target_agent(case.mode)
 
         start = time.perf_counter()
         error = ""
         answer_text = ""
-        actual_route = ""
+        mode = (case.mode or "").strip().lower()
+        actual_route = mode if mode in ("quick", "deep") else "deep"
         actual_tools: list[str] = []
         run_meta: dict[str, Any] = {}
 
         try:
-            if case.mode == "router":
-                actual_route, run_meta = await self._resolve_router_route(case.question, case.id)
-                agent = quick_agent_service if actual_route == "quick" else deep_agent_service
-            else:
-                actual_route = case.expected_route
-
             answer_text, actual_tools, stream_meta = await self._invoke_with_stream(agent, case.question, case.id)
             run_meta.update(stream_meta)
-
         except Exception as exc:
             error = str(exc)
 
         latency_ms = (time.perf_counter() - start) * 1000.0
-
-        if not actual_route:
-            actual_route = case.expected_route
 
         actual_context_mode = str(run_meta.get("context_mode", "") or "")
         context_trace = run_meta.get("context_trace") or {}
@@ -214,8 +160,9 @@ class EvaluationRunner:
         if isinstance(context_trace, dict):
             actual_notes_used = int(context_trace.get("note_count", 0) or 0) > 0
 
-        expected_context_mode = case.expected_context_mode or case.mode
-        route_correct = actual_route.strip().lower() == case.expected_route.strip().lower()
+        expected_context_mode = case.expected_context_mode or actual_route
+        expected_route = (case.expected_route or actual_route).strip().lower()
+        route_correct = actual_route == expected_route
         tool_correct = tool_hit(actual_tools, case.expected_tools)
         kw_hit = keyword_hit(answer_text, case.expected_keywords)
         ev_hit = keyword_hit(answer_text, case.expected_evidence)
@@ -259,9 +206,6 @@ class EvaluationRunner:
         return result
 
     async def run(self) -> tuple[list[EvaluationResult], Any]:
-        """
-        跑完整个测试集。
-        """
         cases = load_cases(self.cases_path)
         results: list[EvaluationResult] = []
 
@@ -273,9 +217,6 @@ class EvaluationRunner:
         return results, summary
 
     async def run_and_report(self, json_report_path: str, md_report_path: str) -> None:
-        """
-        跑完并写报告。
-        """
         results, summary = await self.run()
         write_json_report(json_report_path, summary, results)
         write_markdown_report(md_report_path, summary, results)
