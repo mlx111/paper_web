@@ -80,7 +80,22 @@ class AcademicToolsService:
         engine = (engine or "openalex").strip().lower()
         s2_api_key = s2_api_key or os.getenv("S2_API_KEY")
 
-        if engine == "openalex":
+        if engine == "auto":
+            try:
+                papers = self._search_openalex(query, result_limit, min_year=min_year)
+            except Exception:
+                papers = []
+            if not papers:
+                try:
+                    papers = self._search_semanticscholar(query, result_limit, s2_api_key, min_year=min_year)
+                except Exception:
+                    papers = []
+            if not papers:
+                try:
+                    papers = self._search_arxiv(query, result_limit, min_year=min_year)
+                except Exception:
+                    papers = []
+        elif engine == "openalex":
             papers = self._search_openalex(query, result_limit, min_year=min_year)
         elif engine == "semanticscholar":
             papers = self._search_semanticscholar(query, result_limit, s2_api_key, min_year=min_year)

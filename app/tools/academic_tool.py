@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
+import urllib.request
+from typing import Any
 
 from langchain_core.tools import tool
 from loguru import logger
@@ -52,6 +55,7 @@ def _compact_search_payload(result: dict) -> dict:
         "ok": result.get("ok", True),
         "query": result.get("query", ""),
         "engine": result.get("engine", ""),
+        "sources_used": result.get("sources_used", []),
         "num_results": int(result.get("num_results", len(compact_papers) or 0)),
         "papers": compact_papers,
         "summary": "\n\n".join(summary_lines),
@@ -63,14 +67,13 @@ def _compact_search_payload(result: dict) -> dict:
     name_or_callable="academic_search_papers",
     description=(
         "Search academic papers by query. Use this for literature search, related work, "
-        "paper recommendations, or evidence collection. Args: query, result_limit, engine "
-        "(openalex, semanticscholar, arxiv)."
+        "paper recommendations, or evidence collection. Auto-fallback across OpenAlex, "
+        "CORE, Semantic Scholar, arXiv. Args: query, result_limit."
     ),
 )
 def academic_search_papers(
     query: str,
     result_limit: int = 5,
-    engine: str = "openalex",
     min_year: int | None = None,
     max_papers: int | None = None,
 ) -> str:
@@ -80,7 +83,7 @@ def academic_search_papers(
         result = academic_tools_service.search_papers(
             query=query,
             result_limit=capped_limit,
-            engine=engine,
+            engine="auto",
             min_year=min_year,
         )
         return _dump(_compact_search_payload(result))
@@ -116,4 +119,59 @@ def get_paper_abstract(url: str, title: str) -> str:
         return _dump(academic_tools_service.get_abstract_from_url(url=url, title=title))
     except Exception as exc:
         logger.error("get_paper_abstract failed: {}", exc)
+        return _dump({"ok": False, "error": "TOOL_FAILED", "message": str(exc)})
+
+
+@tool(
+    name_or_callable="search_github_repos",
+    description=(
+        "Search GitHub repositories by keywords. Use this to find open-source projects, "
+        "code implementations, tools, and frameworks related to a topic. "
+        "Args: query, result_limit. Returns repo name, description, stars, URL, language."
+    ),
+)
+def search_github_repos(query: str, result_limit: int = 5) -> str:
+    try:
+        capped_limit = max(1, min(int(result_limit or 5), 10))
+        github_token = os.getenv("GITHUB_TOKEN") or os.getenv("GITHUB_API_KEY") or ""
+        url = f"https://api.github.com/search/repositories?q={urllib.request.quote(query)}&sort=stars&per_page={capped_limit}"
+
+        req = urllib.request.Request(url, headers={"Accept": "application/vnd.github.v3+json"})
+        if github_token:
+            req.add_header("Authorization", f"token {github_token}")
+
+        response = urllib.request.urlopen(req, timeout=15)
+        data = json.loads(response.read().decode("utf-8"))
+        items = data.get("items", [])
+
+        repos = []
+        for item in items[:capped_limit]:
+            repos.append({
+                "repo_name": item.get("full_name", ""),
+                "description": _shorten(item.get("description") or "", 200),
+                "stars": item.get("stargazers_count", 0),
+                "url": item.get("html_url", ""),
+                "language": item.get("language") or "",
+                "topics": item.get("topics", []),
+            })
+
+        summary_lines = []
+        for index, repo in enumerate(repos, 1):
+            line = f"{index}. {repo['repo_name']} ⭐{repo['stars']}"
+            if repo.get("language"):
+                line += f" [{repo['language']}]"
+            if repo.get("description"):
+                line += f"\n   {repo['description']}"
+            line += f"\n   {repo['url']}"
+            summary_lines.append(line)
+
+        return _dump({
+            "ok": True,
+            "query": query,
+            "num_results": len(repos),
+            "repositories": repos,
+            "summary": "\n\n".join(summary_lines),
+        })
+    except Exception as exc:
+        logger.error("search_github_repos failed: {}", exc)
         return _dump({"ok": False, "error": "TOOL_FAILED", "message": str(exc)})

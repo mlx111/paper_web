@@ -10,16 +10,76 @@
       </template>
 
       <template v-else-if="isAssistantLike">
+        <!-- Candidate research plans selection -->
+        <div v-if="hasCandidates" class="message-candidates">
+          <div class="message-candidates-title">请选择研究方向</div>
+          <div
+            v-for="candidate in candidates"
+            :key="candidate.candidate_id"
+            class="message-candidate-card"
+            :class="{ selected: selectedCandidateId === candidate.candidate_id }"
+            @click="selectCandidate(candidate.candidate_id)"
+          >
+            <div class="message-candidate-id">{{ candidate.candidate_id }}</div>
+            <div class="message-candidate-body">
+              <div class="message-candidate-title">{{ candidate.title }}</div>
+              <div class="message-candidate-label">核心问题</div>
+              <div class="message-candidate-text">{{ candidate.core_question }}</div>
+              <div class="message-candidate-label">预期产出</div>
+              <div class="message-candidate-text">{{ candidate.expected_output }}</div>
+            </div>
+          </div>
+          <div v-if="selectedCandidateId" class="message-candidate-actions">
+            <div class="message-candidate-modify">
+              <label class="message-candidate-modify-label">或修改研究方向描述</label>
+              <input
+                v-model="modifiedQuery"
+                type="text"
+                class="message-candidate-modify-input"
+                placeholder="输入修改后的研究方向..."
+              />
+            </div>
+            <button
+              type="button"
+              class="message-action-button message-candidate-confirm"
+              :disabled="!selectedCandidateId"
+              @click="emitCandidateConfirm"
+            >
+              按此方向开始研究
+            </button>
+          </div>
+        </div>
+
         <article class="message-markdown message-markdown-main" v-html="renderedHtml"></article>
+
+        <!-- Research progress timeline -->
+        <div v-if="hasResearchStages" class="message-timeline">
+          <div class="message-timeline-title">研究进度</div>
+          <div class="message-timeline-steps">
+            <div
+              v-for="stage in stageOrder"
+              :key="stage.key"
+              class="message-timeline-step"
+              :class="stageClass(stage.key)"
+            >
+              <div class="message-timeline-dot"></div>
+              <div class="message-timeline-label">{{ stage.label }}</div>
+            </div>
+          </div>
+        </div>
 
         <div v-if="hasDebugEntries" class="message-debug">
           <div class="message-debug-title">研究过程</div>
-          <div class="message-debug-list">
-            <div v-for="entry in debugEntries" :key="entry.key" class="message-debug-item">
-              <div class="message-debug-node">{{ entry.nodeLabel }}</div>
-              <div class="message-debug-text">{{ entry.text }}</div>
+          <div v-if="hasResearchStages" class="message-debug-hint">详细日志见下方可展开区域</div>
+          <details>
+            <summary class="message-debug-summary">查看详细日志</summary>
+            <div class="message-debug-list">
+              <div v-for="entry in debugEntries" :key="entry.key" class="message-debug-item">
+                <div class="message-debug-node">{{ entry.nodeLabel }}</div>
+                <div class="message-debug-text">{{ entry.text }}</div>
+              </div>
             </div>
-          </div>
+          </details>
         </div>
 
         <details v-if="hasResearchPlan" class="message-plan">
@@ -110,17 +170,11 @@
           </div>
         </details>
 
-        <div v-if="canGeneratePresentation" class="message-actions">
-          <button type="button" class="message-action-button" @click="emitPresentationRequest">
-            基于本研究生成 PPT
-          </button>
-        </div>
-
-        <div v-if="canManagePresentationArtifacts" class="message-actions message-actions--artifact">
-          <button type="button" class="message-action-button" @click="emitPresentationQualityRequest">
+        <div v-if="canManageResearchArtifacts" class="message-actions message-actions--artifact">
+          <button type="button" class="message-action-button" @click="emitResearchQualityRequest">
             质量检查
           </button>
-          <button type="button" class="message-action-button" @click="emitPresentationRegenerateRequest">
+          <button type="button" class="message-action-button" @click="emitResearchRegenerateRequest">
             重新生成
           </button>
         </div>
@@ -138,9 +192,9 @@ import { computed, nextTick, onMounted, onUpdated, ref } from 'vue';
 import { highlightCodeBlocks, renderMarkdown } from '../utils/markdown.js';
 
 const emit = defineEmits([
-  'request-presentation',
-  'request-presentation-quality',
-  'request-presentation-regenerate',
+  'request-research-quality',
+  'request-research-regenerate',
+  'candidate-selected',
 ]);
 
 const props = defineProps({
@@ -152,6 +206,53 @@ const props = defineProps({
 
 const contentRoot = ref(null);
 const isAssistantLike = computed(() => props.message.type === 'assistant');
+
+// Candidate selection
+const selectedCandidateId = ref('');
+const modifiedQuery = ref('');
+
+const candidates = computed(() => {
+  const raw = props.message.clarificationCandidates || props.message.clarification_candidates || [];
+  return Array.isArray(raw) ? raw : [];
+});
+
+const hasCandidates = computed(() => candidates.value.length > 0);
+
+function selectCandidate(id) {
+  selectedCandidateId.value = id;
+}
+
+function emitCandidateConfirm() {
+  emit('candidate-selected', {
+    candidateId: selectedCandidateId.value,
+    modifiedQuery: modifiedQuery.value?.trim() || null,
+  });
+}
+
+// Research timeline / stages
+const stageOrder = [
+  { key: 'clarify', label: '澄清' },
+  { key: 'refine', label: '聚焦' },
+  { key: 'branches', label: '分支' },
+  { key: 'search', label: '搜索' },
+  { key: 'synthesize', label: '综合' },
+  { key: 'planning', label: '规划' },
+  { key: 'report', label: '报告' },
+  { key: 'judge', label: '检查' },
+];
+
+const researchStages = computed(() => {
+  const stages = props.message.researchStages || props.message.research_stages || [];
+  return Array.isArray(stages) ? stages : [];
+});
+
+const hasResearchStages = computed(() => researchStages.value.length > 0);
+
+function stageClass(stageKey) {
+  const stage = researchStages.value.find(s => s.stage === stageKey);
+  if (!stage) return 'pending';
+  return stage.status || 'pending';
+}
 
 function splitResearchPlan(content) {
   const source = String(content || '');
@@ -209,22 +310,13 @@ const qualityReport = computed(
 );
 const hasQualityReport = computed(() => Boolean(qualityReport.value));
 
-const canManagePresentationArtifacts = computed(() => {
-  const artifacts = props.message.artifacts || {};
-  return Boolean(artifacts.session_id || artifacts.pptx_path || artifacts.manifest_path || hasQualityReport.value);
-});
-
-const hasDebugEntries = computed(() => debugEntries.value.length > 0);
-const hasSources = computed(() => displaySources.value.length > 0);
-const hasResearchPlan = computed(() => Boolean(extractedPlan.value.plan));
-
-const canGeneratePresentation = computed(() => {
+const canManageResearchArtifacts = computed(() => {
   const artifacts = props.message.artifacts || {};
   return Boolean(
-    artifacts.can_generate_ppt ||
-      artifacts.research_session_id ||
+    artifacts.research_session_id ||
       artifacts.session_id ||
-      props.message.researchSessionId,
+      props.message.researchSessionId ||
+      hasQualityReport.value,
   );
 });
 
@@ -246,35 +338,19 @@ function applyHighlight() {
   });
 }
 
-function emitPresentationRequest() {
-  emit('request-presentation', {
-    content: props.message.content || '',
-    artifacts: props.message.artifacts || {},
-    researchSessionId:
-      props.message.researchSessionId ||
-      props.message.research_session_id ||
-      props.message.artifacts?.research_session_id ||
-      props.message.artifacts?.session_id ||
-      '',
-    topic: props.message.artifacts?.question || props.message.content || '',
-  });
-}
-
-function emitPresentationQualityRequest() {
-  emit('request-presentation-quality', {
+function emitResearchQualityRequest() {
+  emit('request-research-quality', {
     content: props.message.content || '',
     artifacts: props.message.artifacts || {},
     sessionId: props.message.artifacts?.session_id || props.message.researchSessionId || '',
-    topic: props.message.artifacts?.topic || props.message.content || '',
   });
 }
 
-function emitPresentationRegenerateRequest() {
-  emit('request-presentation-regenerate', {
+function emitResearchRegenerateRequest() {
+  emit('request-research-regenerate', {
     content: props.message.content || '',
     artifacts: props.message.artifacts || {},
     sessionId: props.message.artifacts?.session_id || props.message.researchSessionId || '',
-    topic: props.message.artifacts?.topic || props.message.content || '',
   });
 }
 
@@ -630,5 +706,236 @@ onUpdated(applyHighlight);
 .message-action-button:hover {
   background: #f4f8fd;
   border-color: #99b4d6;
+}
+
+/* Candidate selection cards */
+.message-candidates {
+  margin-bottom: 16px;
+  padding: 14px;
+  border: 1px solid #d0ddef;
+  border-radius: 14px;
+  background: linear-gradient(180deg, #f8fbff 0%, #f4f8ff 100%);
+}
+
+.message-candidates-title {
+  margin-bottom: 10px;
+  font-size: 14px;
+  font-weight: 700;
+  color: #173053;
+}
+
+.message-candidate-card {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 8px;
+  padding: 10px 12px;
+  border: 1.5px solid #d8e2f0;
+  border-radius: 10px;
+  background: #ffffff;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.message-candidate-card:hover {
+  border-color: #8aabdd;
+  background: #f6faff;
+}
+
+.message-candidate-card.selected {
+  border-color: #2f6ef2;
+  background: #eef5ff;
+  box-shadow: 0 0 0 1px rgba(47, 110, 242, 0.15);
+}
+
+.message-candidate-id {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: #2f6ef2;
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.message-candidate-card.selected .message-candidate-id {
+  background: #1a5bd6;
+}
+
+.message-candidate-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.message-candidate-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #173053;
+  margin-bottom: 4px;
+}
+
+.message-candidate-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #6a7f9c;
+  margin-top: 4px;
+}
+
+.message-candidate-text {
+  font-size: 12px;
+  color: #334155;
+  line-height: 1.5;
+}
+
+.message-candidate-actions {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.message-candidate-modify {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.message-candidate-modify-label {
+  font-size: 12px;
+  color: #536175;
+}
+
+.message-candidate-modify-input {
+  padding: 8px 10px;
+  border: 1px solid #c8d6ea;
+  border-radius: 8px;
+  font-size: 13px;
+  color: #20324a;
+  background: #ffffff;
+}
+
+.message-candidate-modify-input:focus {
+  outline: none;
+  border-color: #2f6ef2;
+  box-shadow: 0 0 0 2px rgba(47, 110, 242, 0.12);
+}
+
+.message-candidate-confirm {
+  align-self: flex-start;
+  background: #2f6ef2;
+  color: #ffffff;
+  border-color: #2f6ef2;
+}
+
+.message-candidate-confirm:hover {
+  background: #1a5bd6;
+  border-color: #1a5bd6;
+}
+
+.message-candidate-confirm:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Research timeline stepper */
+.message-timeline {
+  margin-top: 14px;
+  margin-bottom: 6px;
+}
+
+.message-timeline-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: #536175;
+  margin-bottom: 8px;
+}
+
+.message-timeline-steps {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  overflow-x: auto;
+  padding: 4px 0;
+}
+
+.message-timeline-step {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.message-timeline-step + .message-timeline-step::before {
+  content: '\2192';
+  margin: 0 6px;
+  color: #bcc9db;
+  font-size: 12px;
+}
+
+.message-timeline-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #d8e2f0;
+  flex-shrink: 0;
+}
+
+.message-timeline-step.running .message-timeline-dot {
+  background: #2f6ef2;
+  box-shadow: 0 0 0 3px rgba(47, 110, 242, 0.2);
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+.message-timeline-step.done .message-timeline-dot {
+  background: #22a06b;
+}
+
+.message-timeline-step.failed .message-timeline-dot {
+  background: #e3493a;
+}
+
+@keyframes pulse {
+  0%, 100% { box-shadow: 0 0 0 3px rgba(47, 110, 242, 0.2); }
+  50% { box-shadow: 0 0 0 6px rgba(47, 110, 242, 0.08); }
+}
+
+.message-timeline-label {
+  font-size: 11px;
+  color: #6a7f9c;
+  white-space: nowrap;
+}
+
+.message-timeline-step.running .message-timeline-label {
+  color: #2f6ef2;
+  font-weight: 600;
+}
+
+.message-timeline-step.done .message-timeline-label {
+  color: #22a06b;
+}
+
+.message-timeline-step.failed .message-timeline-label {
+  color: #e3493a;
+}
+
+.message-debug-hint {
+  font-size: 11px;
+  color: #8a9bb5;
+  margin-bottom: 6px;
+}
+
+.message-debug-summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: #2f6ef2;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.message-debug-summary::-webkit-details-marker {
+  display: none;
 }
 </style>

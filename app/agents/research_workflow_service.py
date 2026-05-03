@@ -27,7 +27,8 @@ from pydantic import BaseModel, Field
 
 from models.factory import qwen_model
 from services.history_service import HistoryService
-from tools.academic_tool import academic_search_papers, get_paper_abstract, get_paper_bibtex
+from tools.academic_tool import academic_search_papers, get_paper_abstract, get_paper_bibtex, search_github_repos
+from tools.websearch_tool import web_search
 from tools.paper_refiner_tool import build_citation_pool, review_paper_quality
 
 
@@ -79,8 +80,17 @@ class ResearchJudge(BaseModel):
     )
 
 
+class ResearchCandidate(BaseModel):
+    candidate_id: str = Field(description="候选方案编号: A, B, C")
+    title: str = Field(description="简短标题")
+    core_question: str = Field(description="核心研究问题")
+    expected_output: str = Field(description="预期研究产出")
+    search_keywords: str = Field(description="用于后续检索的关键词")
+
+
 class ResearchClarification(BaseModel):
-    needs_clarification: bool = Field(description="Whether the request is broad enough to need clarification.")
+    needs_clarification: bool = Field(default=False, description="Whether the request is broad enough to need clarification.")
+    candidates: list[ResearchCandidate] = Field(default_factory=list, description="2-3 个候选研究方案 (A/B/C)")
     questions: list[str] = Field(default_factory=list, description="Up to three clarification questions.")
     assumed_scope: str = Field(default="", description="Short Chinese summary of the assumed scope for this round.")
     refined_query: str = Field(
@@ -97,6 +107,7 @@ class SearchPapersInput(BaseModel):
 class ResearchState(TypedDict, total=False):
     requires_research: bool
     num_feedback_requests: int
+    tool_rounds: int
     is_good_answer: bool
     research_plan: str
     clarification_questions: list[str]
@@ -106,6 +117,9 @@ class ResearchState(TypedDict, total=False):
     research_branches: list[dict[str, Any]]
     aggregated_learnings: list[str]
     branch_sources: list[dict[str, Any]]
+    research_candidates: list[dict[str, Any]]
+    clarification_status: str
+    selected_candidate_id: str
     messages: Annotated[Sequence[BaseMessage], add_messages]
 
 
@@ -227,8 +241,9 @@ def download_paper(url: str) -> str:
 
 
 TOOLS: list[BaseTool] = [
-    download_paper,
     academic_search_papers,
+    search_github_repos,
+    web_search,
     get_paper_abstract,
     get_paper_bibtex,
     review_paper_quality,
@@ -258,6 +273,12 @@ Language policy:
 - Write the plan in Simplified Chinese by default.
 - If the user explicitly requests another language, follow the user's request.
 
+Output scope:
+- Prioritize the most impactful and relevant papers (target ~10 high-value papers total).
+- Include code repositories only if they are directly relevant and valuable (target ~5, optional).
+- Include relevant articles or official documentation (target ~5, optional).
+- Quality over quantity — do not exhaustively search all topics.
+
 Rules:
 - Use only the information provided in the conversation and tools.
 - Do not guess when evidence is missing.
@@ -278,14 +299,24 @@ Language policy:
 - If the user explicitly requests another language, follow the user's request.
 - Keep paper titles, venue names, and quoted source text in their original language when helpful, but explain them in Chinese.
 
+Output scope:
+- Prioritize the most impactful and relevant papers (target ~10 high-value papers total).
+- Include code repositories only if directly relevant (target ~5, skip if none found).
+- Include relevant articles or official documentation (target ~5, skip if none found).
+- Be selective — a few high-quality sources are better than many low-quality ones.
+- Stop searching once you have sufficient evidence; do not aim for exhaustive coverage.
+
 Requirements:
 - Add inline citations when you can.
 - Prefer evidence from the papers over unsupported claims.
 - Use academic_search_papers for literature search.
-- Use download-paper only when a paper URL needs full-text extraction.
 - Use get_paper_bibtex when the user needs references.
 - Use build_citation_pool when the user asks for related work or recommended citations.
 - Use review_paper_quality when the user asks to evaluate a paper, abstract, or paper excerpt.
+- Use search_github_repos when the user asks for code, open-source projects, implementations, or related tools.
+- Use web_search for real-time information, news, blog posts, tutorials, and general web content.
+- For GitHub repositories listed in the report, always include the direct clickable URL.
+- When citing web search results, indicate the source site in brackets (e.g., [腾讯云], [CSDN]).
 - If the evidence is insufficient, say so clearly.
 """
 
@@ -318,9 +349,17 @@ Language policy:
 
 Your job:
 - Decide whether the topic is broad or ambiguous enough to need clarification.
-- Produce up to 3 clarification questions that would help narrow the research.
-- Even if no user answers are available yet, produce a practical assumed scope for this round.
-- Produce a refined Chinese research goal that is specific enough for planning and report writing.
+- If the topic IS broad or ambiguous: produce 2 to 3 distinct research plan candidates.
+  Each candidate must have:
+  - candidate_id: "A", "B", "C"
+  - title: A short descriptive title
+  - core_question: The core research question this direction would investigate
+  - expected_output: What the research would produce
+  - search_keywords: Specific keywords for literature search on this direction
+  The candidates should represent DIFFERENT approaches or focus areas,
+  not minor variations of the same idea.
+- If the topic is narrow enough: set needs_clarification=false, provide a practical
+  assumed_scope and a refined Chinese research goal. No candidates needed.
 
 Return structured output only.
 """
@@ -383,10 +422,11 @@ class ResearchWorkflowService:
         # 把同一个 research 会话里的历史重新载入，
         # 这样模型可以看到本模块内的前文，但不会看到其他模块的历史。
         prior_messages = self._history_messages(session_id)
-        return {
+        inputs: dict[str, Any] = {
             "messages": [*prior_messages, HumanMessage(content=question)],
             "requires_research": False,
             "num_feedback_requests": 0,
+            "tool_rounds": 0,
             "is_good_answer": False,
             "research_plan": "",
             "clarification_questions": [],
@@ -396,7 +436,21 @@ class ResearchWorkflowService:
             "research_branches": [],
             "aggregated_learnings": [],
             "branch_sources": [],
+            "research_candidates": [],
+            "clarification_status": "none",
+            "selected_candidate_id": "",
         }
+        # Check for pending clarification state — if the previous call left
+        # clarification_state.json with a confirmed candidate, we skip clarify.
+        pending = self._load_clarification_state(session_id)
+        if pending.get("status") == "confirmed":
+            inputs["clarification_status"] = "confirmed"
+            inputs["selected_candidate_id"] = str(pending.get("selected_candidate_id") or "")
+            inputs["refined_query"] = str(pending.get("refined_query") or question)
+            inputs["clarification_summary"] = str(pending.get("clarification_summary") or "")
+            # Carry candidates so the frontend can still see them
+            inputs["research_candidates"] = list(pending.get("candidates") or [])
+        return inputs
 
     def _session_storage_dir(self, session_id: str) -> Path:
         session_dir = self.artifact_root / str(session_id)
@@ -413,7 +467,19 @@ class ResearchWorkflowService:
             "sources": session_dir / "sources.json",
             "final_report": session_dir / "final_report.md",
             "report_manifest": session_dir / "report_manifest.json",
+            "clarification_state": session_dir / "clarification_state.json",
         }
+
+    def _clarification_state_path(self, session_id: str) -> Path:
+        return self._session_storage_dir(session_id) / "clarification_state.json"
+
+    def _save_clarification_state(self, session_id: str, state: dict[str, Any]) -> None:
+        """Save pending clarification state so the next call can resume."""
+        self._write_json(self._clarification_state_path(session_id), state)
+
+    def _load_clarification_state(self, session_id: str) -> dict[str, Any]:
+        """Load saved clarification state. Returns empty dict if none exists."""
+        return self._read_json(self._clarification_state_path(session_id), {})
 
     @staticmethod
     def _write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -450,7 +516,7 @@ class ResearchWorkflowService:
 
     @staticmethod
     def _is_search_result_tool(tool_name: str) -> bool:
-        return tool_name in {"search-papers", "academic_search_papers"}
+        return tool_name in {"search-papers", "academic_search_papers", "search_github_repos", "web_search"}
 
     @staticmethod
     def _internal_message_names() -> set[str]:
@@ -486,7 +552,7 @@ class ResearchWorkflowService:
         ] if needs else []
         assumed_scope = "默认聚焦于近年与 LLM-based agents、多智能体协作及工具调用相关的研究进展。"
         refined_query = (
-            f"围绕“{normalized}”开展中文研究综述，重点分析核心概念、代表性论文、主流系统架构、应用场景与局限。"
+            f"围绕「{normalized}」开展中文研究综述，重点分析核心概念、代表性论文、主流系统架构、应用场景与局限。"
             if normalized
             else "围绕用户主题开展中文研究综述，重点分析概念、代表性论文、架构与局限。"
         )
@@ -513,23 +579,17 @@ class ResearchWorkflowService:
     def _preferred_recent_year_floor(self) -> int:
         return max(2024, datetime.now(timezone.utc).year - 2)
 
-    def _recent_year_suffix(self) -> str:
-        current_year = datetime.now(timezone.utc).year
-        year_floor = self._preferred_recent_year_floor()
-        return " ".join(str(year) for year in range(year_floor, current_year + 1))
-
     def _recent_research_branches(self, refined_query: str) -> list[dict[str, Any]]:
         query = (refined_query or "研究主题").strip()
-        year_suffix = self._recent_year_suffix()
         templates = [
-            ("理论基础与关键概念", "梳理核心概念、问题定义和技术脉络"),
-            ("最新方法与代表论文", "检索近年代表性论文、方法和实验结论"),
-            ("应用场景、局限与未来方向", "总结应用价值、主要限制和后续研究机会"),
+            ("foundations and key concepts", "梳理核心概念、问题定义和技术脉络"),
+            ("latest methods and representative works", "检索近年代表性论文、方法和实验结论"),
+            ("applications, limitations and future directions", "总结应用价值、主要限制和后续研究机会"),
         ]
         return [
             self._normalize_branch(
                 {
-                    "branch_query": f"{query} {topic} {year_suffix}".strip(),
+                    "branch_query": f"{query} {topic}".strip(),
                     "branch_goal": f"{goal}。优先近三年（2024-2026）文献",
                 },
                 index=index,
@@ -548,10 +608,20 @@ class ResearchWorkflowService:
 
     @staticmethod
     def _normalize_sources(raw_sources: Any, branch: dict[str, Any]) -> list[dict[str, Any]]:
+        if isinstance(raw_sources, str):
+            try:
+                raw_sources = json.loads(raw_sources)
+            except (json.JSONDecodeError, TypeError):
+                pass
+        if isinstance(raw_sources, dict) and raw_sources.get("ok") is False:
+            return []
         if isinstance(raw_sources, list):
             source_items = raw_sources
         elif isinstance(raw_sources, dict):
-            source_items = raw_sources.get("results") or raw_sources.get("papers") or [raw_sources]
+            raw_papers = raw_sources.get("papers") or raw_sources.get("results") or []
+            if isinstance(raw_papers, list) and len(raw_papers) == 0:
+                return []
+            source_items = raw_papers
         elif raw_sources:
             source_items = [{"title": "搜索结果", "abstract": str(raw_sources)}]
         else:
@@ -568,12 +638,58 @@ class ResearchWorkflowService:
             normalized.append(item)
         return normalized
 
-    def _gather_branch_sources(self, branches: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _gather_branch_sources(self, branches: list[dict[str, Any]], refined_query: str = "") -> list[dict[str, Any]]:
         gathered: list[dict[str, Any]] = []
+        web_query = refined_query.strip() or "research topic"
         for index, branch in enumerate(branches or []):
             normalized_branch = self._normalize_branch(branch, index)
             raw_sources = self._academic_search(normalized_branch["branch_query"], max_papers=3)
             normalized_branch["branch_sources"] = self._normalize_sources(raw_sources, normalized_branch)
+
+            # Also search GitHub repos (use short refined_query, not full branch_query)
+            try:
+                gh_result = search_github_repos.invoke({"query": web_query, "result_limit": 3})
+                gh_data = json.loads(gh_result) if isinstance(gh_result, str) else gh_result
+                if isinstance(gh_data, dict) and gh_data.get("ok"):
+                    for repo in (gh_data.get("repositories") or []):
+                        normalized_branch["branch_sources"].append({
+                            "title": repo.get("repo_name", ""),
+                            "authors": "",
+                            "venue": "GitHub",
+                            "year": 0,
+                            "citation_count": 0,
+                            "url": repo.get("url", ""),
+                            "abstract": repo.get("description", ""),
+                            "branch_id": normalized_branch["branch_id"],
+                            "branch_query": normalized_branch["branch_query"],
+                        })
+            except Exception:
+                pass
+
+            # Also search the web (use short refined_query, not full branch_query)
+            try:
+                web_result = web_search.invoke({"query": web_query, "count": 3})
+                web_data = web_result if isinstance(web_result, dict) else {}
+                web_items = (web_data.get("data") or web_data.get("results")
+                             or web_data.get("items") or web_data.get("documents") or [])
+                if isinstance(web_items, list):
+                    for item in web_items[:3]:
+                        if not isinstance(item, dict):
+                            continue
+                        normalized_branch["branch_sources"].append({
+                            "title": item.get("title", item.get("name", "")),
+                            "authors": "",
+                            "venue": item.get("source", item.get("site_name", "Web")),
+                            "year": item.get("year", item.get("date", "")),
+                            "citation_count": 0,
+                            "url": item.get("url", item.get("link", "")),
+                            "abstract": item.get("snippet", item.get("content", item.get("summary", ""))),
+                            "branch_id": normalized_branch["branch_id"],
+                            "branch_query": normalized_branch["branch_query"],
+                        })
+            except Exception:
+                pass
+
             gathered.append(normalized_branch)
         return gathered
 
@@ -581,9 +697,17 @@ class ResearchWorkflowService:
     def _source_learning(source: dict[str, Any]) -> str:
         title = str(source.get("title") or source.get("name") or "来源").strip()
         abstract = str(source.get("abstract") or source.get("snippet") or source.get("summary") or "").strip()
+        url = str(source.get("url") or "").strip()
+        venue = str(source.get("venue") or "").strip()
         if len(abstract) > 120:
             abstract = abstract[:120].rstrip() + "..."
-        return f"{title}: {abstract}" if abstract else title
+        label = f"[{venue}] " if venue else ""
+        parts = [f"{label}{title}"]
+        if abstract:
+            parts.append(abstract)
+        if url:
+            parts.append(url)
+        return ": ".join(parts) if len(parts) > 1 else parts[0]
 
     def _synthesize_branches(self, branches: list[dict[str, Any]]) -> list[dict[str, Any]]:
         synthesized: list[dict[str, Any]] = []
@@ -784,7 +908,76 @@ class ResearchWorkflowService:
                 artifacts=artifacts_map,
             ),
         )
+        artifacts_map["report_content"] = final_report
         return artifacts_map
+
+    def check_report_quality(self, session_id: str) -> dict[str, Any]:
+        artifacts = self._load_research_artifacts(session_id)
+        manifest = artifacts.get("manifest") or {}
+        branches = list((artifacts.get("branches") or {}).get("branches") or [])
+        sources = list((artifacts.get("sources") or {}).get("sources") or [])
+        learnings = list((artifacts.get("learnings") or {}).get("learnings") or [])
+        final_report = str(artifacts.get("final_report") or "")
+
+        issues: list[str] = []
+        warnings: list[str] = []
+        checks: dict[str, bool] = {}
+
+        source_count = len(sources)
+        branch_count = len(branches)
+        learning_count = len(learnings)
+        report_length = len(final_report.strip())
+
+        checks["has_sources"] = source_count > 0
+        if source_count == 0:
+            issues.append("没有收集到任何文献来源。")
+        elif source_count < 3:
+            warnings.append(f"来源数量偏少（仅 {source_count} 条）。")
+
+        checks["has_branches"] = branch_count > 0
+        if branch_count == 0:
+            issues.append("没有研究分支数据。")
+
+        checks["has_learnings"] = learning_count > 0
+        if learning_count == 0:
+            issues.append("没有分支学习摘要。")
+
+        checks["has_report"] = report_length > 0
+        if report_length == 0:
+            issues.append("最终报告为空。")
+        elif report_length < 200:
+            warnings.append(f"报告内容过短（仅 {report_length} 字符）。")
+
+        has_github = any(
+            str(s.get("venue", "")).lower() == "github"
+            for s in sources
+        )
+        has_web = any(
+            str(s.get("venue", "")).lower() not in {"", "github"}
+            and str(s.get("url", "")).startswith("http")
+            for s in sources
+        )
+        if not has_github:
+            warnings.append("未找到 GitHub 仓库结果。")
+        if not has_web:
+            warnings.append("未找到网页搜索结果（可能因 API 连接问题）。")
+
+        passed = len(issues) == 0
+        summary = "通过" if passed else f"发现 {len(issues)} 项问题"
+        if warnings:
+            summary += f"，{len(warnings)} 项警告"
+
+        return {
+            "passed": passed,
+            "summary": summary,
+            "issues": issues,
+            "warnings": warnings,
+            "checks": checks,
+            "source_count": source_count,
+            "branch_count": branch_count,
+            "learning_count": learning_count,
+            "report_length": report_length,
+        }
 
     def _build_final_report_markdown(
         self,
@@ -802,43 +995,51 @@ class ResearchWorkflowService:
         lines = [
             f"# {title}",
             "",
-            "## 原始问题",
-            question or "（未提供）",
-            "",
-            "## 研究范围说明",
-            clarification or "本轮未额外生成范围说明。",
-            "",
         ]
-        if questions:
-            lines.extend(["## 澄清问题建议", *[f"- {item}" for item in questions], ""])
-        if plan_text:
-            plan_lines = [line.rstrip() for line in str(plan_text).splitlines() if line.strip()]
-            if plan_lines:
-                lines.extend(["## 研究计划", *[f"- {line}" for line in plan_lines], ""])
-        if research_branches:
-            lines.extend(["## 研究方向"])
-            for branch in research_branches:
-                lines.append(f"- {branch.get('branch_id', '')}: {branch.get('branch_goal', '')}")
-            lines.append("")
         if aggregated_learnings:
             lines.extend(["## 核心发现", *[f"- {item}" for item in aggregated_learnings], ""])
-        if branch_sources:
-            lines.extend(["## 来源概览"])
-            for source in branch_sources:
-                title_text = source.get("title") or source.get("name") or "来源"
-                branch_id = source.get("branch_id", "")
-                lines.append(f"- {branch_id}: {title_text}" if branch_id else f"- {title_text}")
-            lines.append("")
         lines.extend(
             [
                 "## 研究结论",
                 final_answer or "本轮未产出有效研究结论。",
                 "",
-                "## 说明",
-                "本报告由 research workflow 自动生成，用于沉淀本轮研究范围、计划与结论，便于后续继续研究或生成演示材料。",
-                "",
             ]
         )
+        if branch_sources:
+            seen_refs: dict[str, dict[str, Any]] = {}
+            for source in branch_sources:
+                title_text = str(source.get("title") or source.get("name") or "").strip()
+                if not title_text:
+                    continue
+                url = str(source.get("url") or "").strip()
+                authors = str(source.get("authors") or "").strip()
+                year = str(source.get("year") or "").strip()
+                source_type = str(source.get("source") or source.get("source_type") or "academic").strip()
+                key = title_text.lower()
+                if key not in seen_refs:
+                    seen_refs[key] = {
+                        "title": title_text,
+                        "authors": authors,
+                        "year": year,
+                        "url": url,
+                        "type": source_type,
+                    }
+            if seen_refs:
+                lines.append("## 参考文献\n")
+                for idx, (_, ref) in enumerate(seen_refs.items(), 1):
+                    parts = [f"[{idx}] {ref['title']}"]
+                    if ref["authors"]:
+                        parts.append(f" — {ref['authors']}")
+                    if ref["year"]:
+                        parts.append(f" ({ref['year']})")
+                    if ref["url"]:
+                        parts.append(f"\n    {ref['url']}")
+                    if ref["type"] in ("github", "repository"):
+                        parts.append(" [GitHub]")
+                    elif ref["type"] in ("web", "webpage"):
+                        parts.append(" [Web]")
+                    lines.append("".join(parts))
+                lines.append("")
         return "\n".join(lines).strip() + "\n"
 
     def _persist_research_artifacts(
@@ -935,9 +1136,22 @@ class ResearchWorkflowService:
 
         def router(state: ResearchState) -> str:
             # 决策节点的分支控制：
-            # - 需要研究 -> 进入 planning
+            # - 需要研究且已确认候选方案 -> 跳过 clarify 直接进入 refine_query
+            # - 需要研究 -> 进入 clarify
             # - 不需要研究 -> 直接结束
-            return "clarify" if state["requires_research"] else "end"
+            if state.get("requires_research"):
+                if state.get("clarification_status") == "confirmed":
+                    return "refine_query"
+                return "clarify"
+            return "end"
+
+        def clarify_router(state: ResearchState) -> str:
+            # clarify 之后的分支控制：
+            # - 需要等待候选方案选择 -> 结束图（等待用户确认）
+            # - 否则 -> 继续 refine_query
+            if state.get("clarification_status") == "awaiting_selection":
+                return "end"
+            return "refine_query"
 
         def clarify_node(state: ResearchState) -> dict[str, Any]:
             question = self._latest_user_question(state.get("messages", []))
@@ -947,13 +1161,23 @@ class ResearchWorkflowService:
             except Exception:
                 response = self._fallback_clarification(question)
 
-            summary = response.assumed_scope or "本轮按默认研究范围继续推进。"
-            refined_query = response.refined_query or self._fallback_clarification(question).refined_query
+            candidates = [c.model_dump() for c in response.candidates if c.model_dump().get("candidate_id")]
+            if candidates and response.needs_clarification:
+                status = "awaiting_selection"
+                summary = response.assumed_scope or "请从以上候选方案中选择研究方向。"
+                refined = response.refined_query or candidates[0].get("search_keywords", question)
+            else:
+                status = "none"
+                summary = response.assumed_scope or "本轮按默认研究范围继续推进。"
+                refined = response.refined_query or self._fallback_clarification(question).refined_query
+
             return {
                 "clarification_questions": list(response.questions or []),
                 "clarification_summary": summary,
-                "refined_query": refined_query,
-                "messages": [AIMessage(content=f"研究范围聚焦：{summary}\n\n增强研究目标：{refined_query}", name="clarify")],
+                "refined_query": refined,
+                "research_candidates": candidates,
+                "clarification_status": status,
+                "messages": [AIMessage(content=f"研究范围聚焦：{summary}\n\n增强研究目标：{refined}", name="clarify")],
             }
 
         def refine_query_node(state: ResearchState) -> dict[str, Any]:
@@ -983,12 +1207,24 @@ class ResearchWorkflowService:
             }
 
         def branch_gather_node(state: ResearchState) -> dict[str, Any]:
-            branches = self._gather_branch_sources(list(state.get("research_branches") or []))
-            branch_sources = [
-                source
-                for branch in branches
-                for source in branch.get("branch_sources", [])
-            ]
+            branches = self._gather_branch_sources(
+                list(state.get("research_branches") or []),
+                refined_query=state.get("refined_query", ""),
+            )
+            # Flatten and deduplicate across branches by title
+            seen_titles: set[str] = set()
+            branch_sources = []
+            for branch in branches:
+                deduped = []
+                for src in branch.get("branch_sources", []):
+                    title = (src.get("title") or "").strip().lower()
+                    if title and title not in seen_titles:
+                        seen_titles.add(title)
+                        deduped.append(src)
+                    elif not title:
+                        deduped.append(src)
+                branch["branch_sources"] = deduped
+                branch_sources.extend(deduped)
             summary = "\n".join(
                 f"- {branch['branch_id']}: 收集到 {len(branch.get('branch_sources', []))} 条来源"
                 for branch in branches
@@ -1064,7 +1300,7 @@ class ResearchWorkflowService:
                         tool_call_id=tool_id,
                     )
                 )
-            return {"messages": outputs}
+            return {"messages": outputs, "tool_rounds": state.get("tool_rounds", 0) + 1}
 
         def agent_node(state: ResearchState) -> dict[str, Any]:
             # 节点 4：综合计划 + 工具结果，生成面向用户的研究回答。
@@ -1095,15 +1331,19 @@ class ResearchWorkflowService:
         def should_continue(state: ResearchState) -> str:
             # agent 节点如果还带着 tool_calls，就说明它还想继续查证，
             # 因此回到 tools；否则进入 judge 进行质量检查。
+            # 最多 3 轮工具调用，防止无限循环耗尽 API 额度。
             last_message = state["messages"][-1]
             tool_calls = getattr(last_message, "tool_calls", None)
-            return "continue" if tool_calls else "end"
+            tool_rounds = state.get("tool_rounds", 0)
+            if tool_calls and tool_rounds < 3:
+                return "continue"
+            return "end"
 
         def judge_node(state: ResearchState) -> dict[str, Any]:
             # 节点 5：质量检查。
             # 如果答案还不够好，就给出 feedback，然后回到 planning 再迭代一轮。
             num_feedback_requests = state.get("num_feedback_requests", 0)
-            if num_feedback_requests >= 2:
+            if num_feedback_requests >= 3:
                 return {"is_good_answer": True}
 
             system_prompt = SystemMessage(content=JUDGE_PROMPT)
@@ -1132,13 +1372,27 @@ class ResearchWorkflowService:
         workflow.add_node("agent", agent_node)
         workflow.add_node("judge", judge_node)
 
-        workflow.set_entry_point("decision_making")
+        # When user already confirmed a research candidate, skip decision_making
+        # and go directly to refine_query. Otherwise start with decision_making.
+        def entry_router(state: ResearchState) -> str:
+            if state.get("clarification_status") == "confirmed":
+                return "refine_query"
+            return "decision_making"
+
+        workflow.set_conditional_entry_point(
+            entry_router,
+            {"decision_making": "decision_making", "refine_query": "refine_query"},
+        )
         workflow.add_conditional_edges(
             "decision_making",
             router,
-            {"clarify": "clarify", "end": END},
+            {"clarify": "clarify", "refine_query": "refine_query", "end": END},
         )
-        workflow.add_edge("clarify", "refine_query")
+        workflow.add_conditional_edges(
+            "clarify",
+            clarify_router,
+            {"refine_query": "refine_query", "end": END},
+        )
         workflow.add_edge("refine_query", "expand")
         workflow.add_edge("expand", "branch_gather")
         workflow.add_edge("branch_gather", "branch_synthesize")
@@ -1194,13 +1448,49 @@ class ResearchWorkflowService:
             # 按节点把中间过程不断吐给前端，方便展示研究进度和工具调用过程。
             logger.info("[research {}] start stream query: {}", session_id, question)
             inputs = self._build_inputs(question, session_id)
+
+            # Pre-determine expected stage sequence based on inputs
+            node_to_stage = {
+                "decision_making": "decision",
+                "clarify": "clarify",
+                "refine_query": "refine",
+                "expand": "branches",
+                "branch_gather": "search",
+                "branch_synthesize": "synthesize",
+                "planning": "planning",
+                "agent": "report",
+                "judge": "judge",
+            }
+            if inputs.get("clarification_status") == "confirmed":
+                expected_stages = ["decision", "refine", "branches", "search", "synthesize", "planning", "report", "judge"]
+            else:
+                expected_stages = ["decision", "clarify", "refine", "branches", "search", "synthesize", "planning", "report", "judge"]
+
             streamed_messages: list[BaseMessage] = []
             final_state_values: dict[str, Any] = {}
+
+            # Emit first stage as running before the graph starts
+            if expected_stages:
+                yield {"type": "stage", "stage": expected_stages[0], "status": "running"}
 
             async for chunk in self.app.astream(inputs, stream_mode="updates"):
                 for node_name, updates in chunk.items():
                     if not isinstance(updates, dict):
                         continue
+
+                    stage_name = node_to_stage.get(node_name)
+
+                    # Mark current stage as done
+                    if stage_name:
+                        yield {"type": "stage", "stage": stage_name, "status": "done"}
+                        # Emit next expected stage as running
+                        try:
+                            current_idx = expected_stages.index(stage_name)
+                            if current_idx + 1 < len(expected_stages):
+                                yield {"type": "stage", "stage": expected_stages[current_idx + 1], "status": "running"}
+                        except ValueError:
+                            pass
+
                     final_state_values.update({key: value for key, value in updates.items() if key != "messages"})
 
                     messages = updates.get("messages") or []
@@ -1212,8 +1502,6 @@ class ResearchWorkflowService:
                         message_type = type(message).__name__
 
                         if isinstance(message, AIMessage) and getattr(message, "tool_calls", None):
-                            # 这里把模型发起的工具调用单独作为事件发出去，
-                            # 前端可以据此显示“正在检索论文 / 正在下载全文”之类的状态。
                             for tool_call in message.tool_calls:
                                 yield {
                                     "type": "tool_call",
@@ -1226,8 +1514,6 @@ class ResearchWorkflowService:
                             continue
 
                         if isinstance(message, ToolMessage):
-                            # 工具返回的原始结果也单独透出。
-                            # search-papers 会被标成 search_results，方便前端区分。
                             event_type = "search_results" if self._is_search_result_tool(message.name or "") else "content"
                             yield {
                                 "type": event_type,
@@ -1237,8 +1523,6 @@ class ResearchWorkflowService:
                             continue
 
                         if isinstance(message, AIMessage):
-                            # planning / judge / 其它 AI 中间消息也可以透出，
-                            # 这样后面排查流程时能看清楚每一步发生了什么。
                             text = self._extract_text(message)
                             if text:
                                 message_name = getattr(message, "name", "")
@@ -1254,11 +1538,37 @@ class ResearchWorkflowService:
                         if isinstance(message, HumanMessage):
                             continue
 
-                        # Anything else is emitted as debug info for inspection.
                         yield {"type": "debug", "node": node_name, "message_type": message_type, "data": self._extract_text(message)}
 
-            # 流程结束后，把最终答案写回 research 专属历史，
-            # 方便下一次同模块会话继续沿用这段上下文。
+            # After graph completes, check if we need to pause for candidate selection
+            clarification_status = str(final_state_values.get("clarification_status") or "none")
+            research_candidates = list(final_state_values.get("research_candidates") or [])
+
+            if clarification_status == "awaiting_selection" and research_candidates:
+                self._save_clarification_state(session_id, {
+                    "status": "awaiting_selection",
+                    "question": question,
+                    "candidates": research_candidates,
+                    "selected_candidate_id": None,
+                    "refined_query": str(final_state_values.get("refined_query") or question),
+                    "clarification_summary": str(final_state_values.get("clarification_summary") or ""),
+                })
+                yield {
+                    "type": "candidates",
+                    "data": {
+                        "candidates": research_candidates,
+                        "session_id": session_id,
+                        "question": question,
+                        "clarification_summary": str(final_state_values.get("clarification_summary") or ""),
+                    },
+                }
+                # Save clarify exchange to history so it persists across session re-entry
+                clarify_summary = str(final_state_values.get("clarification_summary") or "")
+                clarify_refined = str(final_state_values.get("refined_query") or question)
+                self._save_turn(session_id, question, f"研究范围聚焦：{clarify_summary}\n\n增强研究目标：{clarify_refined}")
+                return  # Stop here, wait for user to select
+
+            # Normal completion — persist artifacts and save history
             final_answer = self._extract_final_answer(streamed_messages)
             if final_answer:
                 self._save_turn(session_id, question, final_answer)
@@ -1276,6 +1586,11 @@ class ResearchWorkflowService:
                 branch_sources=list(final_state_values.get("branch_sources") or []),
             )
 
+            # Clean up clarification state after completion
+            state_path = self._clarification_state_path(session_id)
+            if state_path.exists():
+                state_path.unlink(missing_ok=True)
+
             yield {
                 "type": "complete",
                 "data": {
@@ -1284,11 +1599,67 @@ class ResearchWorkflowService:
                     "artifacts": artifacts,
                     "report_path": artifacts.get("report_path", ""),
                     "refined_query": str(final_state_values.get("refined_query") or question),
+                    "research_candidates": research_candidates,
+                    "clarification_status": clarification_status,
                 },
             }
         except Exception as exc:
             logger.error("[research {}] stream failed: {}", session_id, exc)
             logger.error("Exception traceback:\n{}", "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
+            yield {"type": "error", "data": str(exc)}
+
+    async def get_candidates(self, question: str, session_id: str):
+        """Phase 1: Return research candidates without running full research."""
+        try:
+            logger.info("[research {}] get candidates: {}", session_id, question)
+            inputs = self._build_inputs(question, session_id)
+
+            pending = self._load_clarification_state(session_id)
+            if pending.get("status") in ("awaiting_selection", "confirmed"):
+                yield {
+                    "type": "candidates",
+                    "data": {
+                        "candidates": list(pending.get("candidates") or []),
+                        "session_id": session_id,
+                        "question": str(pending.get("question") or question),
+                        "clarification_summary": str(pending.get("clarification_summary") or ""),
+                        "status": str(pending.get("status")),
+                    },
+                }
+                return
+
+            async for chunk in self.app.astream(inputs, stream_mode="updates"):
+                for node_name, updates in chunk.items():
+                    if not isinstance(updates, dict):
+                        continue
+                    if node_name == "clarify":
+                        research_candidates = list(updates.get("research_candidates") or [])
+                        clarification_status = str(updates.get("clarification_status") or "none")
+                        if research_candidates and clarification_status == "awaiting_selection":
+                            self._save_clarification_state(session_id, {
+                                "status": "awaiting_selection",
+                                "question": question,
+                                "candidates": research_candidates,
+                                "selected_candidate_id": None,
+                                "refined_query": str(updates.get("refined_query") or question),
+                                "clarification_summary": str(updates.get("clarification_summary") or ""),
+                            })
+                            yield {
+                                "type": "candidates",
+                                "data": {
+                                    "candidates": research_candidates,
+                                    "session_id": session_id,
+                                    "question": question,
+                                    "clarification_summary": str(updates.get("clarification_summary") or ""),
+                                },
+                            }
+                            return
+
+            async for result in self.query_stream(question, session_id):
+                yield result
+
+        except Exception as exc:
+            logger.error("[research {}] get_candidates failed: {}", session_id, exc)
             yield {"type": "error", "data": str(exc)}
 
     def get_session_history(self, session_id: str) -> list[dict[str, Any]]:
@@ -1314,6 +1685,9 @@ class ResearchWorkflowService:
     def clear_session(self, session_id: str) -> bool:
         try:
             self._history(session_id).clear()
+            history_file = self.history_root / str(session_id)
+            if history_file.exists():
+                history_file.unlink(missing_ok=True)
             session_dir = self.artifact_root / str(session_id)
             if session_dir.exists():
                 shutil.rmtree(session_dir, ignore_errors=True)

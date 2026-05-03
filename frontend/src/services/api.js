@@ -227,6 +227,29 @@ export async function loadResearchSessionHistory(sessionId) {
   }
 }
 
+export async function getResearchCandidates({ sessionId, question, onEvent }) {
+  try {
+    await postStream('/research/candidates', {
+      id: sessionId,
+      question
+    }, onEvent);
+  } catch (error) {
+    throw new Error(getErrorMessage(error, 'Failed to get research candidates.'));
+  }
+}
+
+export async function confirmResearchCandidate({ sessionId, candidateId, modifiedQuery }) {
+  try {
+    return await postJson('/research/confirm_candidate', {
+      sessionId,
+      candidateId,
+      modifiedQuery: modifiedQuery || null
+    });
+  } catch (error) {
+    throw new Error(getErrorMessage(error, 'Failed to confirm research candidate.'));
+  }
+}
+
 export async function clearResearchSession(sessionId) {
   try {
     return await postJson('/research/clear', {
@@ -234,6 +257,36 @@ export async function clearResearchSession(sessionId) {
     });
   } catch (error) {
     throw new Error(getErrorMessage(error, 'Failed to clear research session.'));
+  }
+}
+
+export async function checkResearchQuality(sessionId) {
+  try {
+    return await postJson('/research/report/quality', {
+      sessionId
+    });
+  } catch (error) {
+    throw new Error(getErrorMessage(error, 'Research quality check failed.'));
+  }
+}
+
+export async function regenerateResearchReport(sessionId) {
+  try {
+    return await postJson('/research/report/regenerate', {
+      sessionId
+    });
+  } catch (error) {
+    throw new Error(getErrorMessage(error, 'Research report regeneration failed.'));
+  }
+}
+
+export async function prepareResearchRerun(sessionId) {
+  try {
+    return await postJson('/research/prepare_rerun', {
+      sessionId
+    });
+  } catch (error) {
+    throw new Error(getErrorMessage(error, 'Research rerun preparation failed.'));
   }
 }
 

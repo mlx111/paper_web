@@ -29,10 +29,11 @@ frontend/.vite/
 uploads/
 chat_history/
 volumes/
-app/data/*.json
-app/data/notes/
-app/data/images/
-app/data/tmp/
+runtime/
+jietu/
+app/data/
+app/research_history/
+.claude/
 
 # Logs
 *.log

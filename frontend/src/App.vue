@@ -26,8 +26,9 @@
         :messages="currentMessages"
         :centered="centered"
         @request-presentation="generatePresentationFromResearch"
-        @request-presentation-quality="checkPresentationQuality"
-        @request-presentation-regenerate="regeneratePresentationFromArtifacts"
+        @request-research-quality="checkResearchQuality"
+        @request-research-regenerate="regenerateResearchReport"
+        @candidate-selected="handleCandidateSelected"
       >
         <template #input>
           <ChatInput
@@ -72,11 +73,14 @@ import {
   clearPresentationSession,
   clearResearchSession,
   checkPresentationQuality as requestPresentationQuality,
+  confirmResearchCandidate,
   loadFileSessionHistory,
   loadPresentationSessionHistory,
   loadResearchSessionHistory,
   loadSessionHistory,
-  regeneratePresentation as requestPresentationRegeneration,
+  checkResearchQuality as requestResearchQuality,
+  regenerateResearchReport as requestResearchReportRegeneration,
+  prepareResearchRerun,
   sendFileChat,
   sendPresentationChat,
   sendQuickChat,
@@ -406,6 +410,7 @@ async function sendStreamingMessage(question, extraRequest = {}) {
   let imageMap = {};
   let sources = [];
   let artifacts = {};
+  let researchStages = [];
 
   function formatDebugNodeLabel(nodeName) {
     const mapping = {
@@ -465,6 +470,28 @@ async function sendStreamingMessage(question, extraRequest = {}) {
           return;
         }
 
+        if (payload.type === 'stage') {
+          const stageEntry = { stage: payload.stage, status: payload.status };
+          const updatedStages = [...researchStages.filter(s => s.stage !== payload.stage), stageEntry];
+          researchStages = updatedStages;
+          updateMessage(assistantId, {
+            researchStages: updatedStages,
+            streaming: true,
+          });
+          return;
+        }
+
+        if (payload.type === 'candidates') {
+          const data = payload.data || {};
+          const candidates = Array.isArray(data.candidates) ? data.candidates : [];
+          updateMessage(assistantId, {
+            clarificationCandidates: candidates,
+            clarificationSummary: data.clarification_summary || data.clarificationSummary || '',
+            streaming: false,
+          });
+          return;
+        }
+
         if (payload.type === 'debug') {
           appendDebugEntry(payload);
           return;
@@ -475,12 +502,16 @@ async function sendStreamingMessage(question, extraRequest = {}) {
           imageMap = payload.data?.image_map || payload.data?.imageMap || imageMap;
           sources = payload.data?.sources || sources;
           artifacts = payload.data?.artifacts || payload.data?.artifact || artifacts;
+          researchStages = Array.isArray(payload.data?.research_stages) ? payload.data.research_stages : researchStages;
           fullResponse = answer;
           updateMessage(assistantId, {
             content: answer,
             imageMap,
             sources,
             artifacts,
+            researchStages,
+            researchCandidates: Array.isArray(payload.data?.research_candidates) ? payload.data.research_candidates : [],
+            clarificationStatus: payload.data?.clarification_status || payload.data?.clarificationStatus || '',
             reportPath: payload.data?.report_path || payload.data?.reportPath || artifacts?.report_path || '',
             researchSessionId:
               payload.data?.research_session_id ||
@@ -514,6 +545,102 @@ async function sendStreamingMessage(question, extraRequest = {}) {
     });
     persistConversation();
     showNotification(`流式响应失败：${error.message}`, 'error');
+  }
+}
+
+async function handleCandidateSelected(payload) {
+  const state = currentState.value;
+  if (state.isStreaming) {
+    return;
+  }
+
+  state.isStreaming = true;
+
+  try {
+    const result = await confirmResearchCandidate({
+      sessionId: currentSessionId.value,
+      candidateId: payload.candidateId,
+      modifiedQuery: payload.modifiedQuery || null,
+    });
+
+    if (!result) {
+      showNotification('确认研究方向失败', 'error');
+      return;
+    }
+
+    appendMessage({
+      type: 'user',
+      content: `按「${payload.candidateId}」方向进行研究`,
+    });
+    persistConversation();
+
+    await sendStreamingMessage('按确认方向进行研究');
+    showNotification('研究方向已确认，开始研究...', 'success');
+  } catch (error) {
+    showNotification(`确认研究方向失败：${error.message}`, 'error');
+  } finally {
+    state.isStreaming = false;
+  }
+}
+
+async function checkResearchQuality(payload = {}) {
+  const artifacts = payload?.artifacts || {};
+  const sessionId = payload?.sessionId || artifacts?.session_id || currentSessionId.value;
+
+  if (!sessionId) {
+    showNotification('未找到可检查的研究会话。', 'warning');
+    return;
+  }
+
+  try {
+    const report = await requestResearchQuality(sessionId);
+    const passed = Boolean(report?.passed);
+    const issues = Array.isArray(report?.issues) ? report.issues : [];
+    const warnings = Array.isArray(report?.warnings) ? report.warnings : [];
+    const summary = passed ? '通过' : '未通过';
+    const content = `研究报告质量检查已完成，结果：${summary}。问题 ${issues.length} 项，警告 ${warnings.length} 项。`;
+    appendMessage({ type: 'assistant', content, artifacts: { session_id: sessionId, quality_report: report } });
+    persistConversation();
+    showNotification(`质量检查${passed ? '通过' : '完成'}`, passed ? 'success' : 'warning');
+  } catch (error) {
+    showNotification(`质量检查失败：${error.message}`, 'error');
+  }
+}
+
+async function regenerateResearchReport(payload = {}) {
+  const artifacts = payload?.artifacts || {};
+  const sessionId = payload?.sessionId || artifacts?.session_id || currentSessionId.value;
+
+  if (!sessionId) {
+    showNotification('未找到可重新生成的研究会话。', 'warning');
+    return;
+  }
+
+  const state = currentState.value;
+  if (state.isStreaming) {
+    return;
+  }
+
+  state.isStreaming = true;
+
+  try {
+    const prepResult = await prepareResearchRerun(sessionId);
+    const question = prepResult?.question || '';
+
+    if (!question) {
+      showNotification('未找到原始研究问题。', 'error');
+      return;
+    }
+
+    appendMessage({ type: 'user', content: '重新生成研究报告' });
+    persistConversation();
+
+    await sendStreamingMessage(question);
+    showNotification('研究报告已重新生成。', 'success');
+  } catch (error) {
+    showNotification(`研究报告重新生成失败：${error.message}`, 'error');
+  } finally {
+    state.isStreaming = false;
   }
 }
 

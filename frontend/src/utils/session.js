@@ -55,6 +55,11 @@ export function normalizeMessage(message = {}) {
       artifacts.research_session_id ||
       artifacts.session_id ||
       '',
+    researchStages: Array.isArray(message.researchStages) ? message.researchStages : [],
+    researchCandidates: Array.isArray(message.researchCandidates) ? message.researchCandidates : [],
+    clarificationCandidates: Array.isArray(message.clarificationCandidates) ? message.clarificationCandidates : [],
+    clarificationStatus: message.clarificationStatus || '',
+    clarificationSummary: message.clarificationSummary || '',
   };
 }
 
@@ -102,8 +107,7 @@ export function loadChatHistories(moduleName = 'chat') {
       title: item?.title || 'New chat',
       messages: normalizeMessages(item?.messages || []),
       updatedAt: item?.updatedAt || new Date().toISOString()
-    }))
-    .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime());
+    }));
 }
 
 export function saveChatHistories(histories = [], moduleName = 'chat') {
@@ -119,9 +123,13 @@ export function upsertChatHistory(histories = [], sessionId, messages = []) {
     updatedAt: new Date().toISOString()
   };
 
-  const nextHistories = histories.filter((history) => history.id !== sessionId);
-  nextHistories.unshift(nextHistory);
-  return nextHistories;
+  const index = histories.findIndex((history) => history.id === sessionId);
+  if (index !== -1) {
+    const nextHistories = [...histories];
+    nextHistories[index] = nextHistory;
+    return nextHistories;
+  }
+  return [nextHistory, ...histories];
 }
 
 export function removeChatHistory(histories = [], sessionId) {

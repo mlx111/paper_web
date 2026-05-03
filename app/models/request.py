@@ -84,3 +84,13 @@ class PresentationMaterialsRequest(BaseModel):
     materials: list[PresentationMaterialInput] = Field(default_factory=list, description="素材列表")
 
     model_config = ConfigDict(populate_by_name=True)
+
+
+class ConfirmCandidateRequest(BaseModel):
+    """确认研究候选方案请求."""
+
+    session_id: str = Field(..., description="会话 ID", alias="sessionId")
+    candidate_id: str = Field(..., description="选中的候选方案编号: A, B, 或 C", alias="candidateId")
+    modified_query: str | None = Field(default=None, description="用户修改后的研究方向描述", alias="modifiedQuery")
+
+    model_config = ConfigDict(populate_by_name=True)

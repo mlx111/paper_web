@@ -10,8 +10,9 @@
         :key="message.id"
         :message="message"
         @request-presentation="emit('request-presentation', $event)"
-        @request-presentation-quality="emit('request-presentation-quality', $event)"
-        @request-presentation-regenerate="emit('request-presentation-regenerate', $event)"
+        @request-research-quality="emit('request-research-quality', $event)"
+        @request-research-regenerate="emit('request-research-regenerate', $event)"
+        @candidate-selected="emit('candidate-selected', $event)"
       />
     </div>
 
@@ -23,7 +24,7 @@
 import { nextTick, onMounted, ref, watch } from 'vue';
 import ChatMessage from './ChatMessage.vue';
 
-const emit = defineEmits(['request-presentation', 'request-presentation-quality', 'request-presentation-regenerate']);
+const emit = defineEmits(['request-presentation', 'request-research-quality', 'request-research-regenerate', 'candidate-selected']);
 
 const props = defineProps({
   messages: {

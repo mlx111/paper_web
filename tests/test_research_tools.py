@@ -19,6 +19,7 @@ STUB_MODULES = [
     "services.history_service",
     "tools.academic_tool",
     "tools.paper_refiner_tool",
+    "tools.websearch_tool",
 ]
 _ORIGINAL_MODULES = {name: sys.modules.get(name) for name in STUB_MODULES}
 
@@ -104,11 +105,17 @@ sys.modules["tools.academic_tool"].get_paper_abstract = types.SimpleNamespace(
 sys.modules["tools.academic_tool"].get_paper_bibtex = types.SimpleNamespace(
     name="get_paper_bibtex", args={}
 )
+sys.modules["tools.academic_tool"].search_github_repos = types.SimpleNamespace(
+    name="search_github_repos", args={}
+)
 sys.modules["tools.paper_refiner_tool"].review_paper_quality = types.SimpleNamespace(
     name="review_paper_quality", args={}
 )
 sys.modules["tools.paper_refiner_tool"].build_citation_pool = types.SimpleNamespace(
     name="build_citation_pool", args={}
+)
+sys.modules["tools.websearch_tool"].web_search = types.SimpleNamespace(
+    name="web_search", args={}
 )
 
 
