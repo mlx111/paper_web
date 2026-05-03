@@ -11,10 +11,7 @@ from langchain_core.tools import tool
 from loguru import logger
 
 from services.academic_tools_service import academic_tools_service
-
-
-def _dump(result: dict) -> str:
-    return json.dumps(result, ensure_ascii=False, indent=2)
+from .tool_result import ToolResult
 
 
 def _shorten(text: str, limit: int = 280) -> str:
@@ -86,10 +83,11 @@ def academic_search_papers(
             engine="auto",
             min_year=min_year,
         )
-        return _dump(_compact_search_payload(result))
+        payload = _compact_search_payload(result)
+        return ToolResult.success(data=payload).to_message_content()
     except Exception as exc:
         logger.error("academic_search_papers failed: {}", exc)
-        return _dump({"ok": False, "error": "TOOL_FAILED", "message": str(exc)})
+        return ToolResult.failure(str(exc), "TOOL_FAILED").to_message_content()
 
 
 @tool(
@@ -101,10 +99,11 @@ def academic_search_papers(
 )
 def get_paper_bibtex(url: str, title: str) -> str:
     try:
-        return _dump(academic_tools_service.get_bibtex_from_url(url=url, title=title))
+        data = academic_tools_service.get_bibtex_from_url(url=url, title=title)
+        return ToolResult.success(data=data).to_message_content()
     except Exception as exc:
         logger.error("get_paper_bibtex failed: {}", exc)
-        return _dump({"ok": False, "error": "TOOL_FAILED", "message": str(exc)})
+        return ToolResult.failure(str(exc), "TOOL_FAILED").to_message_content()
 
 
 @tool(
@@ -116,10 +115,11 @@ def get_paper_bibtex(url: str, title: str) -> str:
 )
 def get_paper_abstract(url: str, title: str) -> str:
     try:
-        return _dump(academic_tools_service.get_abstract_from_url(url=url, title=title))
+        data = academic_tools_service.get_abstract_from_url(url=url, title=title)
+        return ToolResult.success(data=data).to_message_content()
     except Exception as exc:
         logger.error("get_paper_abstract failed: {}", exc)
-        return _dump({"ok": False, "error": "TOOL_FAILED", "message": str(exc)})
+        return ToolResult.failure(str(exc), "TOOL_FAILED").to_message_content()
 
 
 @tool(
@@ -165,13 +165,13 @@ def search_github_repos(query: str, result_limit: int = 5) -> str:
             line += f"\n   {repo['url']}"
             summary_lines.append(line)
 
-        return _dump({
+        return ToolResult.success(data={
             "ok": True,
             "query": query,
             "num_results": len(repos),
             "repositories": repos,
             "summary": "\n\n".join(summary_lines),
-        })
+        }).to_message_content()
     except Exception as exc:
         logger.error("search_github_repos failed: {}", exc)
-        return _dump({"ok": False, "error": "TOOL_FAILED", "message": str(exc)})
+        return ToolResult.failure(str(exc), "TOOL_FAILED").to_message_content()

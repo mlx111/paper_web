@@ -13,10 +13,10 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Annotated, ClassVar, Literal, Optional, Sequence, TypedDict
 
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, RemoveMessage, SystemMessage, ToolMessage
 from langchain_core.tools import BaseTool, tool
 from langgraph.graph import END, StateGraph
-from langgraph.graph.message import add_messages
+from langgraph.graph.message import REMOVE_ALL_MESSAGES, add_messages
 try:
     from loguru import logger
 except ImportError:  # pragma: no cover - fallback for minimal test environments
@@ -520,7 +520,7 @@ class ResearchWorkflowService:
 
     @staticmethod
     def _internal_message_names() -> set[str]:
-        return {"clarify", "refine_query", "planning", "judge"}
+        return {"clarify", "refine_query", "planning", "judge", "branch_synthesize", "branch_gather", "tools"}
 
     def _extract_final_answer(self, messages: Sequence[BaseMessage]) -> str:
         for message in reversed(list(messages)):
@@ -530,7 +530,7 @@ class ResearchWorkflowService:
                 text = self._extract_text(message)
                 if text:
                     return text
-        return ""
+        return "研究流程未能生成最终报告，请重试或简化研究问题。"
 
     @staticmethod
     def _latest_user_question(messages: Sequence[BaseMessage]) -> str:
@@ -1300,6 +1300,42 @@ class ResearchWorkflowService:
                         tool_call_id=tool_id,
                     )
                 )
+
+            # Hermes-style compression check: if messages + new outputs exceed threshold, compress
+            full_messages = list(state["messages"]) + outputs
+            estimated_tokens = sum(max(1, len(str(getattr(m, "content", ""))) // 2) for m in full_messages)
+            compression_trigger = 16000  # 50% of 32K context window
+
+            if estimated_tokens > compression_trigger:
+                try:
+                    from app.services.context_compressor_service import (
+                        CompressorConfig,
+                        ContextCompressorService,
+                    )
+                    comp_config = CompressorConfig(
+                        context_window_tokens=32000,
+                        compression_threshold_ratio=0.5,
+                        head_protect_messages=3,
+                        tail_token_budget=20000,
+                        llm_enabled=True,
+                    )
+                    compressor = ContextCompressorService(comp_config)
+                    result = compressor.compress_messages(full_messages)
+                    if result.was_compressed:
+                        logger.info(
+                            "[research] tools_node 压缩完成: {} 条 -> {} 条, 节省 {:.1%}{}",
+                            len(full_messages),
+                            len(result.messages),
+                            result.savings_ratio,
+                            " [THRASH]" if result.thrash_warning else "",
+                        )
+                        return {
+                            "messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), *result.messages],
+                            "tool_rounds": state.get("tool_rounds", 0) + 1,
+                        }
+                except Exception:
+                    pass  # Compression failure must not break the agent
+
             return {"messages": outputs, "tool_rounds": state.get("tool_rounds", 0) + 1}
 
         def agent_node(state: ResearchState) -> dict[str, Any]:
@@ -1323,7 +1359,37 @@ class ResearchWorkflowService:
                 if plan_text or refined_query
                 else AGENT_PROMPT
             )
-            response = self.agent_llm.invoke([system_prompt] + list(state["messages"]))
+
+            # Hermes-style compression check (safety net): compress if state messages already large
+            state_messages = list(state["messages"])
+            estimated_tokens = sum(max(1, len(str(getattr(m, "content", ""))) // 2) for m in state_messages)
+            if estimated_tokens > 24000:
+                try:
+                    from app.services.context_compressor_service import (
+                        CompressorConfig,
+                        ContextCompressorService,
+                    )
+                    comp_config = CompressorConfig(
+                        context_window_tokens=32000,
+                        compression_threshold_ratio=0.75,
+                        head_protect_messages=8,
+                        tail_token_budget=28000,
+                        llm_enabled=True,
+                    )
+                    compressor = ContextCompressorService(comp_config)
+                    result = compressor.compress_messages(state_messages)
+                    if result.was_compressed:
+                        logger.info(
+                            "[research] agent_node 压缩完成: {} 条 -> {} 条, 节省 {:.1%}",
+                            len(state_messages),
+                            len(result.messages),
+                            result.savings_ratio,
+                        )
+                        state_messages = result.messages
+                except Exception:
+                    pass
+
+            response = self.agent_llm.invoke([system_prompt] + state_messages)
             if isinstance(response, AIMessage):
                 response.name = "agent"
             return {"messages": [response]}

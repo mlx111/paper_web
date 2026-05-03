@@ -42,9 +42,43 @@ class ContextConfig:
     # 最终上下文最大字符数
     max_chars: int = 12000
     
-    # 最多保留多少条笔记
+    # 最多保留多少条笔记（旧系统）
     max_note_items: int = 4
 
+    # 最多保留多少条记忆（新结构化记忆系统，语义筛选后）
+    max_memory_items: int = 4
+
+    # 是否启用新记忆系统
+    enable_structured_memory: bool = True
+
+    # ---- Hermes-style 消息级压缩配置 ----
+
+    # 是否启用 Hermes 风格的四阶段消息压缩
+    enable_hermes_compression: bool = True
+
+    # 上下文窗口 token 容量（用于计算压缩触发阈值）
+    context_window_tokens: int = 32000
+
+    # 消息总 token 数超过此比例时触发压缩
+    compression_trigger_ratio: float = 0.5
+
+    # Phase 2: 头部保护的消息条数（system prompt + 首次交换）
+    head_protect_messages: int = 3
+
+    # Phase 2: 尾部 token 预算（保护最近的上下文）
+    tail_token_budget: int = 20000
+
+    # Phase 3: 是否启用 LLM 结构化摘要
+    summary_llm_enabled: bool = True
+
+    # Phase 3: 送入摘要模型的文本上限（字符数）
+    summary_prompt_limit: int = 8000
+
+    # Phase 5: 防抖动 — 最小节省率，低于此值视为低效压缩
+    anti_thrash_min_savings: float = 0.1
+
+    # Phase 5: 连续低效压缩次数阈值，超过后触发警告
+    anti_thrash_consecutive_limit: int = 2
 
     def __post_init__(self) -> None:
         """初始化后做一下参数校验，避免配置写错后悄悄出问题。"""
@@ -62,3 +96,12 @@ class ContextConfig:
         这里会扣掉 reserve_ratio，避免上下文占满窗口。
         """
         return max(1, int(self.max_tokens * (1.0 - self.reserve_ratio)))
+
+    @property
+    def compression_trigger_tokens(self) -> int:
+        """
+        当消息总 token 数超过此值时触发 Hermes 风格压缩。
+
+        默认: 32000 * 0.5 = 16000 tokens
+        """
+        return max(1, int(self.context_window_tokens * self.compression_trigger_ratio))

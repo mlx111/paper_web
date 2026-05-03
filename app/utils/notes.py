@@ -1,22 +1,117 @@
+"""
+Notes utility — bridge between the old NoteService API and the new
+structured Memory system.
+
+Existing callers (ContextGatherer, Agents) continue to work unchanged.
+New code should use app.services.memory directly.
+"""
+
 from pathlib import Path
 import re
 from typing import Any, Iterable
 
 from services.note_service import NoteService
+from services.memory import MemoryWriter, MemorySelector, MemoryType
 
+
+# ---- Old API (kept for backward compat) ----
 
 def get_notes(session_id: str) -> NoteService:
-    """
-    获取当前会话的结构化笔记服务。
-
-    笔记和聊天历史分开保存：
-    - chat_history 用来放对话消息
-    - notes 用来放长期可复用的结构化记忆
-    """
+    """Get the legacy NoteService for a session."""
     project_root = Path(__file__).resolve().parents[2]
     notes_dir = project_root / "app" / "data" / "notes"
     return NoteService(session_id, notes_dir)
 
+
+# ---- New Memory API ----
+
+_memory_writer: MemoryWriter | None = None
+_memory_selector: MemorySelector | None = None
+
+
+def get_memory_writer() -> MemoryWriter:
+    """Get the MemoryWriter for the project (cached singleton)."""
+    global _memory_writer
+    if _memory_writer is None:
+        project_root = Path(__file__).resolve().parents[2]
+        memory_dir = project_root / "app" / "data" / "memory"
+        _memory_writer = MemoryWriter(memory_dir)
+    return _memory_writer
+
+
+def get_memory_selector() -> MemorySelector:
+    """Get the MemorySelector for the project (cached singleton)."""
+    global _memory_selector
+    if _memory_selector is None:
+        project_root = Path(__file__).resolve().parents[2]
+        memory_dir = project_root / "app" / "data" / "memory"
+        _memory_selector = MemorySelector(memory_dir)
+    return _memory_selector
+
+
+async def select_relevant_memories(
+    query: str,
+    max_results: int = 5,
+    llm_call: Any = None,
+) -> list[dict[str, Any]]:
+    """
+    Select relevant memories for a query and return as dicts for context injection.
+
+    Returns list of {title, content, type, importance} dicts compatible
+    with the existing ContextGatherer output format.
+    """
+    selector = get_memory_selector()
+
+    if llm_call:
+        entries = await selector.select(query, max_results=max_results, llm_call=llm_call)
+    else:
+        entries = selector.select_sync(query, max_results=max_results)
+
+    return [
+        {
+            "title": entry.name,
+            "content": entry.content,
+            "kind": entry.type.value,
+            "importance": 0.9,
+            "tags": ["memory", entry.type.value],
+            "metadata": {
+                "memory_type": entry.type.value,
+                "source_file": entry.name,
+                "source_session": entry.source_session_id,
+            },
+        }
+        for entry in entries
+    ]
+
+
+def save_memory_from_turn(
+    user_message: str,
+    assistant_response: str,
+    session_id: str = "",
+) -> dict[str, Any] | None:
+    """
+    Evaluate a completed turn and save as memory if warranted.
+    Returns the saved entry as a dict, or None.
+    """
+    writer = get_memory_writer()
+    entry = writer.evaluate_and_save(
+        user_message,
+        assistant_response,
+        session_id=session_id,
+    )
+
+    if entry is None:
+        return None
+
+    return {
+        "title": entry.name,
+        "content": entry.content,
+        "type": entry.type.value,
+        "created_at": entry.created_at,
+    }
+
+
+# ---- Filter utilities (unchanged) ----
 
 def _filter_notes(
     notes: Iterable[dict[str, Any]],
@@ -24,14 +119,7 @@ def _filter_notes(
     min_importance: float | None = None,
     limit: int | None = None,
 ) -> list[dict[str, Any]]:
-    """
-    Filter and prioritize notes for downstream context building.
-
-    The helper keeps the implementation lightweight:
-    - optional kind filtering
-    - optional importance threshold
-    - stable sorting by importance and recency
-    """
+    """Filter and prioritize notes for downstream context building."""
     filtered: list[dict[str, Any]] = []
     for note in notes:
         if not isinstance(note, dict):
@@ -67,41 +155,17 @@ def _filter_notes(
 
 
 HIGH_VALUE_NOTE_KINDS = {"decision", "constraint", "summary", "preference", "blocker", "memory"}
+
 LOW_VALUE_NOTE_PATTERNS = (
-    "thanks",
-    "thank you",
-    "ok",
-    "okay",
-    "hello",
-    "hi",
-    "收到",
-    "谢谢",
-    "好的",
-    "知道了",
-    "明白了",
-    "随便",
-    "无所谓",
+    "thanks", "thank you", "ok", "okay", "hello", "hi",
+    "收到", "谢谢", "好的", "知道了", "明白了", "随便", "无所谓",
 )
+
 HIGH_VALUE_NOTE_HINTS = (
-    "important",
-    "must",
-    "should",
-    "remember",
-    "constraint",
-    "decision",
-    "prefer",
-    "always",
-    "never",
-    "key",
+    "important", "must", "should", "remember", "constraint",
+    "decision", "prefer", "always", "never", "key",
     "important for later",
-    "重要",
-    "必须",
-    "约束",
-    "决定",
-    "偏好",
-    "记住",
-    "以后",
-    "不要",
+    "重要", "必须", "约束", "决定", "偏好", "记住", "以后", "不要",
 )
 
 
@@ -141,15 +205,7 @@ def should_store_high_value_note(
     extra: dict[str, Any] | None = None,
     min_importance: float = 0.65,
 ) -> bool:
-    """
-    Decide whether a note is worth persisting.
-
-    The gate is intentionally conservative:
-    - empty or boilerplate notes are ignored
-    - duplicates are ignored
-    - structured high-value kinds are preferred
-    - generic notes need stronger signals
-    """
+    """Decide whether a note is worth persisting."""
     title_text = (title or "").strip()
     content_text = (content or "").strip()
     if not title_text and not content_text:
@@ -198,11 +254,8 @@ def save_high_value_note(
     source: str = "manual",
     extra: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    """
-    Save a note only when it looks high-value enough to keep.
-
-    This is the write-path counterpart to `get_notes`.
-    """
+    """Save a note to both the legacy system and new memory system."""
+    # Legacy save
     service = get_notes(session_id)
     if not should_store_high_value_note(
         title=title,
@@ -217,7 +270,7 @@ def save_high_value_note(
     if _is_duplicate_note(service, title, content, kind):
         return None
 
-    return service.add_note(
+    legacy_result = service.add_note(
         title=title,
         content=content,
         tags=tags,
@@ -226,3 +279,31 @@ def save_high_value_note(
         source=source,
         extra=extra,
     )
+
+    # Also save to new memory system
+    try:
+        writer = get_memory_writer()
+        mem_type = _map_kind_to_memory_type(kind)
+        writer.save_manual(
+            title=title,
+            content=content,
+            mem_type=mem_type,
+            session_id=session_id,
+        )
+    except Exception:
+        pass  # Don't fail if new memory system errors
+
+    return legacy_result
+
+
+def _map_kind_to_memory_type(kind: str) -> MemoryType:
+    """Map old note kind to new MemoryType."""
+    mapping = {
+        "decision": MemoryType.PROJECT,
+        "constraint": MemoryType.FEEDBACK,
+        "summary": MemoryType.PROJECT,
+        "preference": MemoryType.USER,
+        "blocker": MemoryType.PROJECT,
+        "memory": MemoryType.REFERENCE,
+    }
+    return mapping.get(kind, MemoryType.PROJECT)

@@ -15,7 +15,7 @@ from context.context_config import ContextConfig
 from models.factory import qwen_model
 from settings.config import config
 from utils.history import get_history
-from utils.notes import save_high_value_note
+from utils.notes import save_high_value_note, get_memory_writer, select_relevant_memories
 from utils.rag_utils import rag_utils_service
 
 
@@ -121,24 +121,65 @@ class BaseAgentService(ABC):
 
     def _retrieve_context_notes(self, session_id: str):
         """
-        给 ContextBuilder 用的 notes 读取适配器。
+        给 ContextBuilder 用的 notes 读取适配器（旧系统）。
 
         默认不接 notes。
         如果某个子类需要 notes，可以重写这个方法。
         """
         return None
 
+    def _retrieve_context_memories(self, question: str, limit: int) -> list[dict[str, Any]]:
+        """
+        给 ContextBuilder 用的结构化记忆加载适配器（新系统）。
+
+        使用语义筛选，只加载与当前问题相关的记忆。
+        """
+        try:
+            import asyncio
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # Running in async context — use sync fallback
+                from utils.notes import get_memory_selector
+                selector = get_memory_selector()
+                entries = selector.select_sync(question, max_results=limit)
+                return [
+                    {
+                        "title": e.name,
+                        "content": e.content,
+                        "kind": e.type.value,
+                        "importance": 0.9,
+                        "tags": ["memory", e.type.value],
+                        "metadata": {
+                            "memory_type": e.type.value,
+                            "source_session": e.source_session_id,
+                        },
+                    }
+                    for e in entries
+                ]
+            else:
+                # Synchronous context — run async
+                import asyncio as _asyncio
+                result = _asyncio.run(select_relevant_memories(question, max_results=limit))
+                return result
+        except Exception:
+            return []
+
     def _build_context_builder(self) -> ContextBuilder:
         """
         统一创建 ContextBuilder。
 
-        这样 quick / deep / router 都可以共用同一套上下文工程。
+        现在同时接入旧 notes 系统和新结构化记忆系统。
         """
+        memory_loader = None
+        if self.context_config.enable_structured_memory:
+            memory_loader = self._retrieve_context_memories
+
         return ContextBuilder(
             history_loader=self.history_loader,
             knowledge_retriever=self._retrieve_context_documents,
             parent_chunk_retriever=None,
             notes_loader=self._retrieve_context_notes,
+            memory_loader=memory_loader,
             rerank_fn=None,
             config=self.context_config,
         )
@@ -354,6 +395,10 @@ class BaseAgentService(ABC):
     def _persist_memory(self, session_id: str, question: str, answer: str) -> None:
         """
         Persist a high-value memory note when the response looks reusable.
+
+        Saves to both:
+        1. Legacy NoteService (app/data/notes/)
+        2. New structured Memory system (app/data/memory/)
         """
         if not answer:
             return
@@ -362,6 +407,7 @@ class BaseAgentService(ABC):
         if memory_note is None:
             return
 
+        # Legacy system
         saved = save_high_value_note(
             session_id=session_id,
             title=memory_note["title"],
@@ -372,6 +418,26 @@ class BaseAgentService(ABC):
             source="agent_memory",
             extra=memory_note["extra"],
         )
+
+        # New structured memory system
+        try:
+            from utils.notes import save_memory_from_turn
+            mem_result = save_memory_from_turn(
+                user_message=question,
+                assistant_response=answer,
+                session_id=session_id,
+            )
+            if mem_result:
+                logger.info(
+                    "{} 结构化记忆写入完成，会话: {}，type: {}，title: {}",
+                    self.__class__.__name__,
+                    session_id,
+                    mem_result["type"],
+                    mem_result["title"],
+                )
+        except Exception:
+            pass  # New system failure is non-fatal
+
         if saved is not None:
             logger.info(
                 "{} 记忆写入完成，会话: {}，kind: {}，title: {}",
@@ -404,6 +470,52 @@ class BaseAgentService(ABC):
             messages.append(SystemMessage(content=bundle.final_context))
         messages.append(HumanMessage(content=question))
         return messages, bundle
+
+    @staticmethod
+    def _pre_compress_messages(messages: list, config_obj: Any = None) -> list:
+        """
+        Hermes-style 消息级压缩钩子。
+
+        当消息列表超过上下文窗口 50% 时触发四阶段压缩。
+        当前 base agent 消息列表极短（2 条），实际不会触发；
+        此钩子为研究流程等长消息场景保留统一入口。
+        """
+        if not config_obj:
+            config_obj = ContextConfig()
+
+        if not getattr(config_obj, "enable_hermes_compression", False):
+            return messages
+
+        # Lazy import to avoid circular dependency
+        from app.services.context_compressor_service import (
+            CompressorConfig,
+            ContextCompressorService,
+        )
+
+        comp_config = CompressorConfig(
+            context_window_tokens=getattr(config_obj, "context_window_tokens", 32000),
+            compression_threshold_ratio=getattr(config_obj, "compression_trigger_ratio", 0.5),
+            head_protect_messages=getattr(config_obj, "head_protect_messages", 3),
+            tail_token_budget=getattr(config_obj, "tail_token_budget", 20000),
+            llm_enabled=getattr(config_obj, "summary_llm_enabled", True),
+            summarize_prompt_limit=getattr(config_obj, "summary_prompt_limit", 8000),
+            anti_thrash_min_savings=getattr(config_obj, "anti_thrash_min_savings", 0.1),
+            anti_thrash_consecutive_limit=getattr(config_obj, "anti_thrash_consecutive_limit", 2),
+        )
+
+        compressor = ContextCompressorService(comp_config)
+        result = compressor.compress_messages(messages)
+
+        if result.was_compressed:
+            logger.info(
+                "消息压缩完成: {} 条 -> {} 条, 节省 {:.1%}{}",
+                len(messages),
+                len(result.messages),
+                result.savings_ratio,
+                " [THRASH]" if result.thrash_warning else "",
+            )
+
+        return result.messages
 
     @staticmethod
     def _extract_tool_names(messages) -> list[str]:

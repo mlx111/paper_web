@@ -94,3 +94,22 @@ class ConfirmCandidateRequest(BaseModel):
     modified_query: str | None = Field(default=None, description="用户修改后的研究方向描述", alias="modifiedQuery")
 
     model_config = ConfigDict(populate_by_name=True)
+
+
+class WorkflowRunRequest(BaseModel):
+    """YAML 工作流执行请求."""
+
+    session_id: str = Field(..., description="会话 ID", alias="sessionId")
+    workflow_name: str = Field(..., description="工作流名称", alias="workflowName")
+    params: dict[str, Any] = Field(default_factory=dict, description="工作流参数")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class WorkflowProgressRequest(BaseModel):
+    """工作流检查点进度查询请求."""
+
+    session_id: str = Field(..., description="会话 ID", alias="sessionId")
+    workflow_name: str = Field(..., description="工作流名称", alias="workflowName")
+
+    model_config = ConfigDict(populate_by_name=True)

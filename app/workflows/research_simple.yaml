@@ -1,0 +1,36 @@
+name: "research_simple"
+description: "Simple one-shot research workflow: search then synthesize"
+
+config:
+  max_tool_rounds: 3
+
+parameters:
+  question: ""
+
+workflow:
+  - task:
+      name: "search"
+      instruction: |
+        Search for academic papers and information about: {{question}}
+        Return the most relevant results with titles, authors, and abstracts.
+      enabled_tools:
+        - "academic_search_papers"
+        - "web_search"
+      save_as: "search_results"
+
+  - task:
+      name: "synthesize"
+      instruction: |
+        Based on the search results below, write a clear and concise answer to the question.
+
+        Question: {{question}}
+
+        Search results:
+        {{search_results}}
+
+        Provide your answer with citations where appropriate.
+      disabled_tools: "*"
+      save_as: "answer"
+
+  - set_variable:
+      output: "{{answer}}"

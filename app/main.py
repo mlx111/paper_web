@@ -11,6 +11,7 @@ from routers.file import router as file_router
 from routers.health import router as health_router
 from routers.presentation import router as presentation_router
 from routers.research import router as research_router
+from routers.workflow import router as workflow_router
 from loguru import logger
 from settings.config import config
 from services.mlivus_client_service import mlivus_client_service
@@ -78,6 +79,7 @@ app.include_router(file_router)
 app.include_router(health_router)
 app.include_router(presentation_router)
 app.include_router(research_router)
+app.include_router(workflow_router)
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host=config.host, port=config.port, reload=config.debug)

@@ -2,6 +2,7 @@ from langchain.tools import tool
 from loguru import logger
 
 from services.web_search_service import get_web_search_service
+from .tool_result import ToolResult
 
 
 @tool(
@@ -14,9 +15,10 @@ def web_search(query: str, count: int = 5):
     try:
         service = get_web_search_service()
         result = service.search(query, count)
-        if "error" in result:
+        if isinstance(result, dict) and result.get("error"):
             logger.error(f"web_search failed: {result['error']}")
-        return result
+            return ToolResult.failure(str(result["error"]), "TOOL_FAILED").to_message_content()
+        return ToolResult.success(data=result).to_message_content()
     except Exception as e:
         logger.error(f"web_search tool error: {e}")
-        return {"error": f"联网搜索失败: {str(e)}"}
+        return ToolResult.failure(f"联网搜索失败: {str(e)}", "TOOL_FAILED").to_message_content()
