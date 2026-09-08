@@ -39,6 +39,7 @@ def __getattr__(name: str) -> Any:
 
 
 __all__ = [
+    # Tool functions
     "retrieve_knowledge",
     "get_current_time",
     "summary_message",
