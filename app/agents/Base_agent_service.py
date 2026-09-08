@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import re
 import traceback
@@ -801,6 +801,43 @@ class BaseAgentService(ABC):
             answer_parts: list[str] = []
             stream_token_usage: dict[str, Any] | None = None
 
+            # 流式 tool_call 累积器：stream_mode="messages" 下每个 AIMessageChunk
+            # 的 tool_call args 是 JSON 分片（长参数如多智能体 task 分派会跨多片）。
+            # 按 langgraph 节点累积 AIMessageChunk，在 AI 块结束（切换节点 / 收到工具
+            # 结果 / 流结束）时一次性从合并后的消息里取出完整 tool_calls 再发射。
+            ai_accum: Any = None
+            ai_accum_node: str | None = None
+
+            def _drain_ai_tool_calls(acc: Any, node: str) -> list[dict[str, Any]]:
+                events: list[dict[str, Any]] = []
+                for tool_call in getattr(acc, "tool_calls", None) or []:
+                    if isinstance(tool_call, dict):
+                        tool_name = tool_call.get("name", "unknown")
+                        tool_args = tool_call.get("args")
+                        if tool_args is None:
+                            tool_args = tool_call.get("arguments", {})
+                    else:
+                        tool_name = getattr(tool_call, "name", "unknown")
+                        tool_args = getattr(tool_call, "args", {})
+                    if not tool_name:
+                        continue
+                    logger.info(
+                        "{} 流式调用工具，会话: {}，工具: {}，节点: {}",
+                        self.__class__.__name__,
+                        session_id,
+                        tool_name,
+                        node,
+                    )
+                    events.append({
+                        "type": "tool_call",
+                        "data": {
+                            "tool_name": str(tool_name),
+                            "arguments": tool_args if isinstance(tool_args, dict) else {},
+                        },
+                        "node": node,
+                    })
+                return events
+
             with trace_service.step(trace_run.run_id, "model_stream", "model") as trace_step:
                 async for token, metadata in self.agent.astream(input={"messages": messages}, stream_mode="messages"):
                     node_name = metadata.get("langgraph_node", "unknown") if isinstance(metadata, dict) else "unknown"
@@ -808,6 +845,12 @@ class BaseAgentService(ABC):
                     stream_token_usage = self._extract_token_usage(token) or stream_token_usage
 
                     if message_type in ("AIMessage", "AIMessageChunk"):
+                        # 切换到新节点前，先发射上一节点已累积完整的 tool_calls
+                        if ai_accum is not None and node_name != ai_accum_node:
+                            for event in _drain_ai_tool_calls(ai_accum, ai_accum_node or node_name):
+                                yield event
+                            ai_accum = None
+
                         content_blocks = getattr(token, "content_blocks", None)
                         if content_blocks and isinstance(content_blocks, list):
                             for block in content_blocks:
@@ -817,28 +860,24 @@ class BaseAgentService(ABC):
                                         answer_parts.append(text_content)
                                         yield {"type": "content", "data": text_content, "node": node_name}
 
-                        # AIMessageChunk 也可能带 tool_calls（langchain 标准格式）
-                        tool_calls = getattr(token, "tool_calls", None)
-                        if tool_calls and isinstance(tool_calls, list):
-                            for tool_call in tool_calls:
-                                tool_name = tool_call.get("name", "unknown") if isinstance(tool_call, dict) else "unknown"
-                                logger.info(
-                                    "{} 流式调用工具，会话: {}，工具: {}，节点: {}",
-                                    self.__class__.__name__,
-                                    session_id,
-                                    tool_name,
-                                    node_name,
-                                )
-                                yield {
-                                    "type": "tool_call",
-                                    "data": {
-                                        "tool_name": tool_name,
-                                        "arguments": tool_call.get("args") if tool_call.get("args") is not None else tool_call.get("arguments", {}),
-                                    },
-                                    "node": node_name,
-                                }
+                        # 累积 AI 分片（langchain 支持 chunk 相加合并出完整 tool_calls）
+                        if message_type == "AIMessageChunk":
+                            ai_accum = token if ai_accum is None else (ai_accum + token)
+                        else:
+                            if ai_accum is not None:
+                                for event in _drain_ai_tool_calls(ai_accum, ai_accum_node or node_name):
+                                    yield event
+                            ai_accum = token
+                        ai_accum_node = node_name
 
                     elif message_type in ("ToolCallMessage", "ToolCallMessageChunk"):
+                        # 工具结果消息出现，标志前一个 AI 块的 tool_calls 已定型
+                        if ai_accum is not None:
+                            for event in _drain_ai_tool_calls(ai_accum, ai_accum_node or node_name):
+                                yield event
+                            ai_accum = None
+                            ai_accum_node = None
+
                         tool_calls = getattr(token, "tool_calls", None)
                         if tool_calls and isinstance(tool_calls, list):
                             for tool_call in tool_calls:
@@ -858,6 +897,19 @@ class BaseAgentService(ABC):
                                     },
                                     "node": node_name,
                                 }
+                    else:
+                        # 其它消息类型（如 ToolMessage）也意味着 AI 块结束
+                        if ai_accum is not None:
+                            for event in _drain_ai_tool_calls(ai_accum, ai_accum_node or node_name):
+                                yield event
+                            ai_accum = None
+                            ai_accum_node = None
+
+                # 流结束：发射最后一个 AI 块累积的 tool_calls
+                if ai_accum is not None:
+                    for event in _drain_ai_tool_calls(ai_accum, ai_accum_node or "unknown"):
+                        yield event
+                    ai_accum = None
 
                 trace_step.set_output(
                     {

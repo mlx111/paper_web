@@ -1,24 +1,28 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from typing import Any
 
 from mcp_tools import call_mcp_tool
 
 try:
-    from mcp.server.fastmcp import FastMCP
-except ModuleNotFoundError:
-    class FastMCP:
-        def __init__(self, name: str):
-            self.name = name
+    # mcp>=2.0：FastMCP 更名为 MCPServer
+    from mcp.server.mcpserver import MCPServer as FastMCP
+except (ModuleNotFoundError, ImportError):
+    try:
+        from mcp.server.fastmcp import FastMCP  # mcp<2.0
+    except ModuleNotFoundError:
+        class FastMCP:
+            def __init__(self, name: str):
+                self.name = name
 
-        def tool(self, *args: Any, **kwargs: Any):
-            def decorator(func):
-                return func
+            def tool(self, *args: Any, **kwargs: Any):
+                def decorator(func):
+                    return func
 
-            return decorator
+                return decorator
 
-        def run(self) -> None:
-            raise RuntimeError("The 'mcp' package is not installed. Run pip install -r requirements.txt first.")
+            def run(self) -> None:
+                raise RuntimeError("The 'mcp' package is not installed. Run pip install -r requirements.txt first.")
 
 
 mcp = FastMCP("mypaperweb-tools")

@@ -1,0 +1,19 @@
+{
+  "servers": [
+    {
+      "name": "demo-tools",
+      "transport": "stdio",
+      "enabled": true,
+      "command": "python",
+      "args": ["mcp_external_demo_server.py"],
+      "description": "容器内置演示 MCP server（独立子进程）：calculator 安全数学计算、text_stats 文本统计。用于演示 MCP Host 的运行时发现与动态注册。"
+    },
+    {
+      "name": "example-remote",
+      "transport": "http",
+      "enabled": false,
+      "url": "http://your-mcp-server-host:8080/mcp",
+      "description": "示例：远程 streamable-http MCP server。需要时把 enabled 改为 true 并替换 url 即可接入任意第三方 MCP server，无需改 Host 代码。"
+    }
+  ]
+}

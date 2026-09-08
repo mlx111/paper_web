@@ -1,4 +1,4 @@
-﻿from fastapi import FastAPI
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 from contextlib import asynccontextmanager
@@ -14,9 +14,11 @@ from routers.research import router as research_router
 from routers.trace import router as trace_router
 from routers.workflow import router as workflow_router
 from routers.evaluation import router as evaluation_router
+from routers.mcp import router as mcp_router
 from loguru import logger
 from settings.config import config
 from services.mlivus_client_service import mlivus_client_service
+from services.mcp_client_service import mcp_client_service
 from services.vector_index_service import vector_index_service
 
 
@@ -37,17 +39,32 @@ async def lifespan(app: FastAPI):
 
     logger.info("📚 正在扫描 uploads 目录并自动切片入库...")
     index_result = vector_index_service.sync_directory_incrementally()
-    logger.info(
-        "📚 uploads 扫描完成: 总数={}, 成功={}, 失败={}",
+    logger.info("📚 uploads 扫描完成: 总数={}, 成功={}, 失败={}",
         index_result.total_files,
         index_result.success_count,
         index_result.fail_count,
     )
 
+    # 连接外部 MCP server（MCP Host）：运行时发现并动态注册外部工具。
+    # 连接失败不阻塞主服务启动。
+    try:
+        mcp_info = await mcp_client_service.connect_all()
+        ok_servers = [s for s in mcp_info.get("servers", []) if "error" not in s]
+        logger.info("🔌 MCP Host: 已连接 {} 个外部 MCP server，注册 {} 个外部工具",
+                    len(ok_servers), len(mcp_client_service.get_inventory()))
+    except Exception as exc:
+        logger.warning("MCP Host 初始化异常（不影响主服务）: {}", exc)
+
     logger.info("=" * 60)
     try:
         yield
     finally:
+        try:
+            await mcp_client_service.close()
+            logger.info("MCP Host 连接已关闭")
+        except Exception as exc:
+            logger.error("关闭 MCP Host 连接失败: {}", exc)
+
         try:
             await app.state.redis.aclose()
             logger.info("Redis 连接已关闭")
@@ -84,6 +101,7 @@ app.include_router(research_router)
 app.include_router(trace_router)
 app.include_router(workflow_router)
 app.include_router(evaluation_router)
+app.include_router(mcp_router)
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host=config.host, port=config.port, reload=config.debug)

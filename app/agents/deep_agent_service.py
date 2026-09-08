@@ -46,6 +46,7 @@ class DeepAgentService(BaseAgentService):
         return get_notes(session_id)
 
     def default_tools(self) -> list:
+        # 本地工具 + MCP Host 运行时动态发现的外部工具（来源标记为 mcp）
         return [
             retrieve_knowledge,
             get_current_time,
@@ -56,7 +57,22 @@ class DeepAgentService(BaseAgentService):
             review_paper_quality,
             build_citation_pool,
             extract_document_text,
+            *self._mcp_tools(),
         ]
+
+    def _mcp_tools(self) -> list:
+        """外部 MCP server 工具（由 MCP Host 在应用启动时连接并动态注册）。
+
+        延迟导入：MCP Host 不可用/未连接时返回空列表，不影响 Agent 本身。
+        Agent 是懒初始化的（首次对话才 build_agent），此时 lifespan 已完成
+        MCP 连接，因此能拿到已注册的外部工具。
+        """
+        try:
+            from services.mcp_client_service import mcp_client_service
+
+            return mcp_client_service.get_langchain_tools()
+        except Exception:
+            return []
 
     def _get_skill_registry(self):
         registry = getattr(self, "skill_registry", None)

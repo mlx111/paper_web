@@ -178,7 +178,7 @@ async def evaluation_target(body: TargetEvaluationRequest):
          "tool_called": str|None, "tool_args": dict|None}
     """
     mode = (body.mode or "").strip().lower()
-    if mode not in ("quick", "deep"):
+    if mode not in ("quick", "deep", "multi"):
         # Plain QA routes to the lightweight quick agent; anything needing
         # retrieval / tools uses the deep research agent.
         mode = "quick" if (body.case_type or "").strip().lower() == "qa" else "deep"
