@@ -264,6 +264,36 @@ class EvaluationRunner:
         }
         return answer_text, list(dict.fromkeys(tool_names)), tool_calls, meta
 
+    async def invoke_agent(self, question: str, mode: str = "deep", session_id: str = "") -> dict[str, Any]:
+        """Run a single agent query and return its answer + tool-call trajectory.
+
+        Public helper used by the standard evaluation target endpoint
+        (``POST /evaluation/target``) so external LLMOps platforms can drive
+        the agent and collect its tool-call trajectory without coupling to the
+        internal EvaluationCase model.
+        """
+        agent = get_target_agent(mode)
+        try:
+            answer_text, tool_names, tool_calls, meta = await self._invoke_with_stream(
+                agent, question, session_id
+            )
+            return {
+                "answer": answer_text,
+                "tool_names": tool_names,
+                "tool_calls": tool_calls,
+                "meta": meta,
+                "error": "",
+            }
+        except Exception as exc:  # noqa: BLE001 - surface failure as a failed trajectory
+            logger.warning("invoke_agent failed: mode=%s, error=%s", mode, exc)
+            return {
+                "answer": "",
+                "tool_names": [],
+                "tool_calls": [],
+                "meta": {},
+                "error": str(exc),
+            }
+
     async def _run_one(self, case: EvaluationCase) -> EvaluationResult:
         agent = get_target_agent(case.mode)
 

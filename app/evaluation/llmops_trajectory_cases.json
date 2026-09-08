@@ -1,0 +1,225 @@
+[
+  {
+    "case_type": "agent_trajectory",
+    "input": "什么是上下文工程？",
+    "reference_answer": "{\"steps\": [{\"type\": \"final\", \"content\": \"上下文\"}], \"success\": true}",
+    "tags": [
+      "quick",
+      "quick",
+      "quick_001"
+    ],
+    "difficulty": "easy",
+    "extra_metadata": {
+      "source_case_id": "quick_001",
+      "mode": "quick",
+      "description": "测试 quick 是否能简洁解释概念。",
+      "expected_keywords": [
+        "上下文工程",
+        "上下文"
+      ]
+    }
+  },
+  {
+    "case_type": "agent_trajectory",
+    "input": "帮我查一下现在几点了",
+    "reference_answer": "{\"steps\": [{\"type\": \"tool_call\", \"tool_name\": \"get_current_time\", \"tool_args\": {}}, {\"type\": \"final\", \"content\": \"时间\"}], \"success\": true}",
+    "tags": [
+      "quick",
+      "quick",
+      "quick_002"
+    ],
+    "difficulty": "easy",
+    "extra_metadata": {
+      "source_case_id": "quick_002",
+      "mode": "quick",
+      "description": "测试 quick 是否调用时间工具。",
+      "expected_keywords": [
+        "时间",
+        "现在"
+      ]
+    }
+  },
+  {
+    "case_type": "agent_trajectory",
+    "input": "帮我搜索一下 AI 智能体性能评估的常用指标",
+    "reference_answer": "{\"steps\": [{\"type\": \"tool_call\", \"tool_name\": \"web_search\", \"tool_args\": {\"query\": \"评估\"}}, {\"type\": \"final\", \"content\": \"指标\"}], \"success\": true}",
+    "tags": [
+      "quick",
+      "quick",
+      "quick_003"
+    ],
+    "difficulty": "medium",
+    "extra_metadata": {
+      "source_case_id": "quick_003",
+      "mode": "quick",
+      "description": "测试 quick 是否能正确使用搜索工具。",
+      "expected_keywords": [
+        "评估",
+        "指标"
+      ]
+    }
+  },
+  {
+    "case_type": "agent_trajectory",
+    "input": "请对比 ContextBuilder 和传统 RAG 的区别，并说明各自适用场景",
+    "reference_answer": "{\"steps\": [{\"type\": \"final\", \"content\": \"适用场景\"}], \"success\": true}",
+    "tags": [
+      "deep",
+      "deep",
+      "deep_001"
+    ],
+    "difficulty": "medium",
+    "extra_metadata": {
+      "source_case_id": "deep_001",
+      "mode": "deep",
+      "description": "测试 deep 是否能做结构化对比分析。",
+      "expected_keywords": [
+        "对比",
+        "适用场景",
+        "区别"
+      ]
+    }
+  },
+  {
+    "case_type": "agent_trajectory",
+    "input": "如果检索结果很多，但上下文窗口很小，应该怎么设计压缩策略？",
+    "reference_answer": "{\"steps\": [{\"type\": \"final\", \"content\": \"压缩策略\"}], \"success\": true}",
+    "tags": [
+      "deep",
+      "deep",
+      "deep_002"
+    ],
+    "difficulty": "hard",
+    "extra_metadata": {
+      "source_case_id": "deep_002",
+      "mode": "deep",
+      "description": "测试 deep 是否理解上下文压缩问题。",
+      "expected_keywords": [
+        "压缩",
+        "上下文窗口",
+        "设计"
+      ]
+    }
+  },
+  {
+    "case_type": "agent_trajectory",
+    "input": "请解释为什么这个问题应该优先使用检索证据，而不是只靠历史",
+    "reference_answer": "{\"steps\": [{\"type\": \"final\", \"content\": \"检索证据\"}], \"success\": true}",
+    "tags": [
+      "deep",
+      "deep",
+      "deep_003"
+    ],
+    "difficulty": "medium",
+    "extra_metadata": {
+      "source_case_id": "deep_003",
+      "mode": "deep",
+      "description": "测试 deep 是否能说明检索优先于历史的原因。",
+      "expected_keywords": [
+        "检索证据",
+        "历史"
+      ]
+    }
+  },
+  {
+    "case_type": "agent_trajectory",
+    "input": "请根据当前会话中的 notes 和历史，判断我现在更偏向哪种工作流",
+    "reference_answer": "{\"steps\": [{\"type\": \"final\", \"content\": \"工作流\"}], \"success\": true}",
+    "tags": [
+      "deep",
+      "deep",
+      "deep_004"
+    ],
+    "difficulty": "hard",
+    "extra_metadata": {
+      "source_case_id": "deep_004",
+      "mode": "deep",
+      "description": "测试 deep 是否能利用 notes 做判断。",
+      "expected_keywords": [
+        "notes",
+        "历史",
+        "工作流"
+      ]
+    }
+  },
+  {
+    "case_type": "agent_trajectory",
+    "input": "请查一下今天上海的时间",
+    "reference_answer": "{\"steps\": [{\"type\": \"tool_call\", \"tool_name\": \"get_current_time\", \"tool_args\": {\"timezone\": \"Shanghai\"}}, {\"type\": \"final\", \"content\": \"时间\"}], \"success\": true}",
+    "tags": [
+      "quick",
+      "quick",
+      "tool_001"
+    ],
+    "difficulty": "easy",
+    "extra_metadata": {
+      "source_case_id": "tool_001",
+      "mode": "quick",
+      "description": "测试时间工具调用是否正确。",
+      "expected_keywords": [
+        "上海",
+        "时间"
+      ]
+    }
+  },
+  {
+    "case_type": "agent_trajectory",
+    "input": "请根据文档内容，列出你认为最重要的三条评估指标，并解释原因",
+    "reference_answer": "{\"steps\": [{\"type\": \"tool_call\", \"tool_name\": \"retrieve_knowledge\", \"tool_args\": {\"query\": \"评估指标\"}}, {\"type\": \"final\", \"content\": \"三条\"}], \"success\": true}",
+    "tags": [
+      "deep",
+      "deep",
+      "tool_002"
+    ],
+    "difficulty": "medium",
+    "extra_metadata": {
+      "source_case_id": "tool_002",
+      "mode": "deep",
+      "description": "测试知识检索是否真的参与回答。",
+      "expected_keywords": [
+        "评估指标",
+        "原因"
+      ]
+    }
+  },
+  {
+    "case_type": "agent_trajectory",
+    "input": "根据当前 notes，项目里上下文工程的重点是什么",
+    "reference_answer": "{\"steps\": [{\"type\": \"final\", \"content\": \"重点\"}], \"success\": true}",
+    "tags": [
+      "deep",
+      "deep",
+      "notes_001"
+    ],
+    "difficulty": "medium",
+    "extra_metadata": {
+      "source_case_id": "notes_001",
+      "mode": "deep",
+      "description": "测试 deep 是否能从 notes 中提取关键信息。",
+      "expected_keywords": [
+        "上下文工程",
+        "重点"
+      ]
+    }
+  },
+  {
+    "case_type": "agent_trajectory",
+    "input": "请总结一下当前项目里已经确认的设计约束",
+    "reference_answer": "{\"steps\": [{\"type\": \"final\", \"content\": \"约束\"}], \"success\": true}",
+    "tags": [
+      "deep",
+      "deep",
+      "notes_002"
+    ],
+    "difficulty": "hard",
+    "extra_metadata": {
+      "source_case_id": "notes_002",
+      "mode": "deep",
+      "description": "测试 deep 是否会利用约束类笔记。",
+      "expected_keywords": [
+        "设计约束",
+        "确认"
+      ]
+    }
+  }
+]

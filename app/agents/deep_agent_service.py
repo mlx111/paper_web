@@ -138,12 +138,17 @@ class DeepAgentService(BaseAgentService):
             skills=["/skills/"],
             memory=[],
             system_prompt=self.system_prompt,
-            # deepagent 这里继续保留 store / backend
+            # deepagents>=0.7: backend 必须传入“已初始化的实例”，
+            # 不再接受 lambda rt: ... 这种 backend factory（会抛
+            # "backend must be an initialized backend instance"）。
             store=self.store,
-            backend=lambda rt: CompositeBackend(
-                default=StateBackend(rt),
+            backend=CompositeBackend(
+                default=StateBackend(),
                 routes={
-                    "/memories/": StoreBackend(rt),
+                    "/memories/": StoreBackend(
+                        namespace=lambda rt: ("deepagent", "memories"),
+                        store=self.store,
+                    ),
                     "/skills/": FilesystemBackend(
                         root_dir=Path(__file__).resolve().parent.parent,
                         virtual_mode=True,

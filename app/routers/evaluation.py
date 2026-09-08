@@ -1,12 +1,14 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
+import uuid
 from dataclasses import asdict, is_dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 
 from evaluation.reporter import write_json_report, write_markdown_report
 
@@ -150,4 +152,68 @@ async def run_mcp_evaluation():
             "summary": _summary_to_dict(summary),
         }
     )
+
+
+# ---------- Standard evaluation target endpoint (for external LLMOps platforms) ----------
+
+class TargetEvaluationRequest(BaseModel):
+    query: str
+    case_type: str | None = None
+    mode: str | None = None  # "quick" | "deep"; inferred from case_type when omitted
+    tools: list[str] | None = None
+    context_ids: list[str] | None = None
+
+
+@router.post("/target")
+async def evaluation_target(body: TargetEvaluationRequest):
+    """Standard single-query endpoint driven by an external LLMOps platform.
+
+    Runs the chosen agent on ``query`` and returns a flat JSON payload with the
+    final answer and the tool-call trajectory, aligned to the platform's
+    agent_trajectory schema::
+
+        {"answer": str, "success": bool,
+         "steps": [{"type": "tool_call", "tool_name": ..., "tool_args": {...}},
+                   {"type": "final", "content": ...}],
+         "tool_called": str|None, "tool_args": dict|None}
+    """
+    mode = (body.mode or "").strip().lower()
+    if mode not in ("quick", "deep"):
+        # Plain QA routes to the lightweight quick agent; anything needing
+        # retrieval / tools uses the deep research agent.
+        mode = "quick" if (body.case_type or "").strip().lower() == "qa" else "deep"
+
+    runner_class = _load_runner_class()
+    runner = runner_class(str(CASES_PATH))
+    session_id = f"llmops-{uuid.uuid4().hex[:12]}"
+    result = await runner.invoke_agent(body.query, mode=mode, session_id=session_id)
+
+    tool_calls = result.get("tool_calls") or []
+    steps: list[dict[str, Any]] = [
+        {
+            "type": "tool_call",
+            "tool_name": str(tc.get("name")),
+            "tool_args": tc.get("args") if isinstance(tc.get("args"), dict) else {},
+        }
+        for tc in tool_calls
+        if tc.get("name")
+    ]
+
+    answer = result.get("answer") or ""
+    error = result.get("error") or ""
+    steps.append({"type": "final", "content": answer})
+
+    payload: dict[str, Any] = {
+        "answer": answer,
+        "success": bool(answer) and not error,
+        "steps": steps,
+        "mode": mode,
+        "run_id": str((result.get("meta") or {}).get("run_id") or ""),
+        # Flat aliases kept for tool_calling / single-tool metric compatibility.
+        "tool_called": (result.get("tool_names") or [None])[0] if result.get("tool_names") else None,
+        "tool_args": tool_calls[0].get("args") if tool_calls and isinstance(tool_calls[0].get("args"), dict) else None,
+    }
+    if error:
+        payload["error"] = error[:500]
+    return payload
 
