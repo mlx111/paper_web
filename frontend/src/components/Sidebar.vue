@@ -20,14 +20,14 @@
         </button>
       </div>
 
-      <button class="new-chat-btn" type="button" @click="emit('new-chat')">
+      <button v-if="showChatControls" class="new-chat-btn" type="button" @click="emit('new-chat')">
         <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
           <path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
         </svg>
         <span>新建会话</span>
       </button>
 
-      <section class="chat-history-section">
+      <section v-if="showChatControls" class="chat-history-section">
         <div class="history-header">历史会话</div>
         <div v-if="!histories.length" class="history-empty">暂无会话</div>
         <div v-else class="chat-history-list">
@@ -57,9 +57,11 @@
 </template>
 
 <script setup>
+import { computed } from 'vue';
+
 const emit = defineEmits(['select-module', 'new-chat', 'select-history', 'delete-history']);
 
-defineProps({
+const props = defineProps({
   modules: {
     type: Array,
     default: () => []
@@ -77,4 +79,9 @@ defineProps({
     default: ''
   }
 });
+
+const activeModuleConfig = computed(() =>
+  props.modules.find((module) => module.key === props.activeModule) || null,
+);
+const showChatControls = computed(() => !activeModuleConfig.value?.utility);
 </script>

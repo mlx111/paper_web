@@ -1,12 +1,43 @@
-"""工具模块 - 供 Agent 调用的各种工具"""
+﻿"""Tool package exports and lazy registry access."""
 
-from tools.time_tool import get_current_time
-from tools.message_tool import summary_message
-from tools.websearch_tool import web_search
-from tools.rag_tool import retrieve_knowledge
-from tools.academic_tool import academic_search_papers, get_paper_abstract, get_paper_bibtex
-from tools.paper_refiner_tool import build_citation_pool, review_paper_quality
-from tools.document_parser_tool import extract_document_text
+from __future__ import annotations
+
+import importlib
+from typing import Any
+
+from .registry_factory import TOOL_EXPORTS, build_tool_registry
+from .tool_registry import ToolCategory, ToolMeta, ToolRegistry
+from .tool_result import ToolResult
+from .tool_wrapper import ToolWrapper
+
+
+class _LazyToolRegistry:
+    def __init__(self):
+        self._registry: ToolRegistry | None = None
+
+    def _get_registry(self) -> ToolRegistry:
+        if self._registry is None:
+            self._registry = build_tool_registry()
+        return self._registry
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._get_registry(), name)
+
+
+tool_registry = _LazyToolRegistry()
+
+
+def __getattr__(name: str) -> Any:
+    export = TOOL_EXPORTS.get(name)
+    if export is None:
+        raise AttributeError(f"module 'tools' has no attribute {name!r}")
+    module_name, attr_name = export
+    module = importlib.import_module(module_name)
+    value = getattr(module, attr_name)
+    globals()[name] = value
+    return value
+
+
 __all__ = [
     "retrieve_knowledge",
     "get_current_time",
@@ -15,7 +46,15 @@ __all__ = [
     "academic_search_papers",
     "get_paper_abstract",
     "get_paper_bibtex",
+    "search_github_repos",
     "build_citation_pool",
     "review_paper_quality",
     "extract_document_text",
+    "ToolResult",
+    "ToolCategory",
+    "ToolMeta",
+    "ToolRegistry",
+    "ToolWrapper",
+    "build_tool_registry",
+    "tool_registry",
 ]

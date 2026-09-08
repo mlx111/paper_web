@@ -30,6 +30,7 @@
         "expected_tools": [
             "get_current_time"
         ],
+        "expected_tool_args": {},
         "expected_keywords": [
             "时间",
             "现在"
@@ -57,6 +58,11 @@
         "expected_tools": [
             "web_search"
         ],
+        "expected_tool_args": {
+            "web_search": {
+                "query": "评估"
+            }
+        },
         "expected_keywords": [
             "评估",
             "指标"
@@ -191,6 +197,11 @@
         "expected_tools": [
             "get_current_time"
         ],
+        "expected_tool_args": {
+            "get_current_time": {
+                "timezone": "Shanghai"
+            }
+        },
         "expected_keywords": [
             "上海",
             "时间"
@@ -218,6 +229,11 @@
         "expected_tools": [
             "retrieve_knowledge"
         ],
+        "expected_tool_args": {
+            "retrieve_knowledge": {
+                "query": "评估指标"
+            }
+        },
         "expected_keywords": [
             "评估指标",
             "原因"

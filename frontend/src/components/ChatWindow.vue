@@ -13,6 +13,7 @@
         @request-research-quality="emit('request-research-quality', $event)"
         @request-research-regenerate="emit('request-research-regenerate', $event)"
         @candidate-selected="emit('candidate-selected', $event)"
+        @open-trace="emit('open-trace', $event)"
       />
     </div>
 
@@ -24,7 +25,7 @@
 import { nextTick, onMounted, ref, watch } from 'vue';
 import ChatMessage from './ChatMessage.vue';
 
-const emit = defineEmits(['request-presentation', 'request-research-quality', 'request-research-regenerate', 'candidate-selected']);
+const emit = defineEmits(['request-presentation', 'request-research-quality', 'request-research-regenerate', 'candidate-selected', 'open-trace']);
 
 const props = defineProps({
   messages: {

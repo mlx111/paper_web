@@ -1,0 +1,122 @@
+[
+  {
+    "id": "rank_001",
+    "query": "Transformer attention mechanism",
+    "expected_paper_ids": ["paper_001", "paper_002"],
+    "expected_keywords": ["attention", "transformer"],
+    "difficulty": "easy",
+    "description": "Transformer注意力机制基础"
+  },
+  {
+    "id": "rank_002",
+    "query": "RAG retrieval augmented generation",
+    "expected_paper_ids": ["paper_003", "paper_004"],
+    "expected_keywords": ["retrieval", "RAG"],
+    "difficulty": "easy",
+    "description": "RAG基础"
+  },
+  {
+    "id": "rank_003",
+    "query": "LLM agent evaluation benchmark",
+    "expected_paper_ids": ["paper_005", "paper_006"],
+    "expected_keywords": ["agent", "evaluation", "benchmark"],
+    "difficulty": "medium",
+    "description": "Agent评估基准"
+  },
+  {
+    "id": "rank_004",
+    "query": "上下文压缩技术对比",
+    "expected_paper_ids": ["paper_007", "paper_008"],
+    "expected_keywords": ["压缩", "上下文"],
+    "difficulty": "medium",
+    "description": "上下文压缩技术"
+  },
+  {
+    "id": "rank_005",
+    "query": "LoRA fine-tuning efficiency",
+    "expected_paper_ids": ["paper_009"],
+    "expected_keywords": ["LoRA", "fine-tuning"],
+    "difficulty": "easy",
+    "description": "LoRA微调"
+  },
+  {
+    "id": "rank_006",
+    "query": "Mixture of Experts MoE scaling",
+    "expected_paper_ids": ["paper_010", "paper_011"],
+    "expected_keywords": ["MoE", "mixture of experts"],
+    "difficulty": "medium",
+    "description": "MoE混合专家"
+  },
+  {
+    "id": "rank_007",
+    "query": "knowledge distillation survey",
+    "expected_paper_ids": ["paper_012"],
+    "expected_keywords": ["knowledge distillation", "survey"],
+    "difficulty": "easy",
+    "description": "知识蒸馏综述"
+  },
+  {
+    "id": "rank_008",
+    "query": "chain of thought reasoning",
+    "expected_paper_ids": ["paper_013"],
+    "expected_keywords": ["chain of thought", "reasoning"],
+    "difficulty": "easy",
+    "description": "思维链推理"
+  },
+  {
+    "id": "rank_009",
+    "query": "RLHF human feedback alignment",
+    "expected_paper_ids": ["paper_014"],
+    "expected_keywords": ["RLHF", "reinforcement learning"],
+    "difficulty": "medium",
+    "description": "RLHF人类反馈"
+  },
+  {
+    "id": "rank_010",
+    "query": "contrastive learning sentence embedding",
+    "expected_paper_ids": ["paper_015", "paper_016"],
+    "expected_keywords": ["contrastive learning", "embedding"],
+    "difficulty": "medium",
+    "description": "对比学习句子嵌入"
+  },
+  {
+    "id": "rank_011",
+    "query": "graph neural network survey",
+    "expected_paper_ids": ["paper_017"],
+    "expected_keywords": ["graph neural network", "GNN"],
+    "difficulty": "easy",
+    "description": "图神经网络综述"
+  },
+  {
+    "id": "rank_012",
+    "query": "diffusion model image generation",
+    "expected_paper_ids": ["paper_018", "paper_019"],
+    "expected_keywords": ["diffusion", "image generation"],
+    "difficulty": "medium",
+    "description": "扩散模型图像生成"
+  },
+  {
+    "id": "rank_013",
+    "query": "multi-modal large language model",
+    "expected_paper_ids": ["paper_020"],
+    "expected_keywords": ["multi-modal", "vision-language"],
+    "difficulty": "medium",
+    "description": "多模态大模型"
+  },
+  {
+    "id": "rank_014",
+    "query": "tool learning llm planning",
+    "expected_paper_ids": ["paper_006", "paper_021"],
+    "expected_keywords": ["tool", "planning"],
+    "difficulty": "hard",
+    "description": "工具学习与规划"
+  },
+  {
+    "id": "rank_015",
+    "query": "long context transformer efficient attention",
+    "expected_paper_ids": ["paper_022"],
+    "expected_keywords": ["long context", "efficient attention"],
+    "difficulty": "hard",
+    "description": "长上下文Transformer"
+  }
+]

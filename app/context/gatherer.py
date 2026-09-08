@@ -10,10 +10,12 @@ class ContextGatherer:
     """
     Gather 阶段。
 
-    这个阶段只负责“收集原料”：
+    这个阶段只负责收集原料：
     - 历史消息
     - 知识库检索结果
     - 父块检索结果
+    - 结构化笔记（旧系统）
+    - 结构化记忆（新系统，语义筛选）
 
     不做筛选，不做压缩，不做最终拼装。
     """
@@ -24,15 +26,18 @@ class ContextGatherer:
         knowledge_retriever: Callable[[str, int], Iterable[Any]] | None = None,
         parent_chunk_retriever: Callable[[str, int], Iterable[Any]] | None = None,
         notes_loader: Callable[[str], Any] | None = None,
+        memory_loader: Callable[[str, int], list[dict[str, Any]]] | None = None,
         config: ContextConfig | None = None,
     ):
         self.history_loader = history_loader
         self.knowledge_retriever = knowledge_retriever
         self.parent_chunk_retriever = parent_chunk_retriever
         self.notes_loader = notes_loader
+        self.memory_loader = memory_loader
         self.config = config or ContextConfig()
         self.max_history_messages = self.config.max_history_messages
         self.max_note_items = self.config.max_note_items
+        self.max_memory_items = self.config.max_memory_items
 
 
     def _load_history(self, session_id: str) -> list[dict[str, Any]]:
@@ -73,7 +78,7 @@ class ContextGatherer:
         return normalized
     def _load_notes(self, session_id: str) -> list[dict[str, Any]]:
         """
-        读取结构化笔记。
+        读取结构化笔记（旧系统）。
 
         这里兼容两种情况：
         1. 返回的是 NoteService
@@ -115,6 +120,49 @@ class ContextGatherer:
             )
 
         return normalized
+
+    def _load_memories(
+        self, question: str, session_id: str
+    ) -> list[dict[str, Any]]:
+        """
+        从新的结构化记忆系统中按语义筛选加载记忆。
+
+        与 _load_notes 不同：
+        - notes 全量加载，按 importance 排序取 top N
+        - memories 先做语义筛选（最多 5 条），再加载
+        """
+        if self.memory_loader is None:
+            return []
+
+        try:
+            memories = self.memory_loader(question, self.max_memory_items)
+            if not memories:
+                return []
+
+            normalized: list[dict[str, Any]] = []
+            for mem in (memories or []):
+                if not isinstance(mem, dict):
+                    continue
+
+                title = str(mem.get("title", "")).strip()
+                content = str(mem.get("content", "")).strip()
+                if not content and not title:
+                    continue
+
+                normalized.append(
+                    {
+                        "title": title,
+                        "content": content,
+                        "tags": mem.get("tags", []),
+                        "kind": f"memory:{mem.get('kind', 'project')}",
+                        "importance": mem.get("importance", 0.9),
+                        "metadata": mem.get("metadata", {}) or {},
+                    }
+                )
+
+            return normalized
+        except Exception:
+            return []
 
     def _to_text(self, item: Any) -> str:
         """尽量把各种对象转成文本。"""
@@ -255,7 +303,7 @@ class ContextGatherer:
                 candidates.extend(self._wrap_items(parent_items, "parent_chunk"))
             except Exception:
                 pass
-                # 结构化笔记也作为候选上下文加入
+                # 旧结构化笔记也作为候选上下文加入
         notes = self._load_notes(session_id)
         for item in notes:
             title = item.get("title", "")
@@ -274,5 +322,27 @@ class ContextGatherer:
                     },
                 )
             )
+
+        # 新结构化记忆（语义筛选后）
+        memories = self._load_memories(question, session_id)
+        for item in memories:
+            title = item.get("title", "")
+            content = item.get("content", "")
+            merged = f"[Memory:{item.get('kind', '')}] {title}: {content}" if title else content
+
+            candidates.append(
+                ContextCandidate(
+                    source="memory",
+                    content=merged,
+                    score=float(item.get("importance", 0.9) or 0.9),
+                    metadata={
+                        "kind": item.get("kind", "note"),
+                        "tags": item.get("tags", []),
+                        "source": "memory_system",
+                        **(item.get("metadata", {}) or {}),
+                    },
+                )
+            )
+
         # 这里简单按分数排序一下，后续阶段再做更复杂的筛选
         return candidates, history

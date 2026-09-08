@@ -131,6 +131,14 @@ async function getJson(path) {
   return response.json();
 }
 
+async function getJsonEnvelope(path) {
+  const payload = await getJson(path);
+  if (payload?.code !== 200) {
+    throw new Error(payload?.message || 'Request failed');
+  }
+  return payload?.data || {};
+}
+
 async function postFormData(path, formData) {
   const response = await fetch(buildUrl(path), {
     method: 'POST',
@@ -443,5 +451,79 @@ export async function uploadPresentationMaterial(file, sessionId) {
     return result?.data || result || {};
   } catch (error) {
     throw new Error(getErrorMessage(error, 'Presentation material upload failed.'));
+  }
+}
+
+export async function getTrace(runId) {
+  try {
+    return await getJsonEnvelope(`/traces/${encodeURIComponent(runId)}`);
+  } catch (error) {
+    throw new Error(getErrorMessage(error, 'Failed to load trace.'));
+  }
+}
+
+export async function listTraces(sessionId) {
+  try {
+    const query = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : '';
+    return await getJsonEnvelope(`/traces${query}`);
+  } catch (error) {
+    throw new Error(getErrorMessage(error, 'Failed to list traces.'));
+  }
+}
+
+export async function listEvaluationReports() {
+  try {
+    return await getJsonEnvelope('/evaluation/reports');
+  } catch (error) {
+    throw new Error(getErrorMessage(error, 'Failed to list evaluation reports.'));
+  }
+}
+
+export async function getEvaluationReport(reportName) {
+  try {
+    return await getJsonEnvelope(`/evaluation/reports/${encodeURIComponent(reportName)}`);
+  } catch (error) {
+    throw new Error(getErrorMessage(error, 'Failed to load evaluation report.'));
+  }
+}
+
+export async function runEvaluation() {
+  try {
+    return await postJson('/evaluation/run', {});
+  } catch (error) {
+    throw new Error(getErrorMessage(error, 'Evaluation run failed.'));
+  }
+}
+
+export async function runWorkflowStream({ sessionId, workflowName, params = {}, onEvent }) {
+  try {
+    await postStream('/workflow/run_stream', {
+      sessionId,
+      workflowName,
+      params
+    }, onEvent);
+  } catch (error) {
+    throw new Error(getErrorMessage(error, 'Workflow streaming failed.'));
+  }
+}
+
+export async function getWorkflowProgress({ sessionId, workflowName }) {
+  try {
+    return await postJson('/workflow/progress', {
+      sessionId,
+      workflowName
+    });
+  } catch (error) {
+    throw new Error(getErrorMessage(error, 'Failed to load workflow progress.'));
+  }
+}
+
+export async function clearWorkflowCheckpoints(sessionId) {
+  try {
+    return await postJson('/workflow/clear', {
+      sessionId
+    });
+  } catch (error) {
+    throw new Error(getErrorMessage(error, 'Failed to clear workflow checkpoints.'));
   }
 }

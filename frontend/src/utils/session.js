@@ -48,6 +48,16 @@ export function normalizeMessage(message = {}) {
     sources: Array.isArray(message.sources) ? message.sources : [],
     debugEntries: Array.isArray(message.debugEntries) ? message.debugEntries : [],
     artifacts,
+    runId: message.runId || message.run_id || '',
+    tracePath: message.tracePath || message.trace_path || '',
+    traceMeta: message.traceMeta || message.trace_meta || {},
+    traceStatus: message.traceStatus || message.trace_status || 'unknown',
+    workflowRunId: message.workflowRunId || message.workflow_run_id || '',
+    workflowName: message.workflowName || message.workflow_name || '',
+    workflowStatus: message.workflowStatus || message.workflow_status || 'unknown',
+    workflowSteps: Array.isArray(message.workflowSteps)
+      ? message.workflowSteps
+      : (Array.isArray(message.workflow_steps) ? message.workflow_steps : []),
     reportPath: message.reportPath || message.report_path || artifacts.report_path || '',
     researchSessionId:
       message.researchSessionId ||

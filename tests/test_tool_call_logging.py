@@ -49,6 +49,8 @@ sys.modules["models.factory"].qwen_model = types.SimpleNamespace(init_model=lamb
 sys.modules["settings.config"].config = types.SimpleNamespace(rag_model="test")
 sys.modules["utils.history"].get_history = lambda session_id: None
 sys.modules["utils.notes"].save_high_value_note = lambda **kwargs: None
+sys.modules["utils.notes"].get_memory_writer = lambda: None
+sys.modules["utils.notes"].select_relevant_memories = lambda *args, **kwargs: []
 sys.modules["utils.rag_utils"].rag_utils_service = types.SimpleNamespace()
 
 from agents.Base_agent_service import BaseAgentService

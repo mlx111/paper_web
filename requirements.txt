@@ -10,7 +10,7 @@ loguru
 
 # Validation and auth
 pydantic[email]
-pwdlib
+pwdlib[argon2]
 
 # Database, cache, and mail
 sqlalchemy
@@ -27,6 +27,7 @@ langchain-text-splitters
 langgraph
 langchain-qwq
 deepagents
+mcp
 
 # Retrieval and vector storage
 pymilvus
@@ -34,6 +35,12 @@ elasticsearch
 jieba
 requests
 urllib3
+
+# Web search
+tavily-python
+
+# Skills runtime (docx/pptx/xlsx 技能脚本解析 OOXML)
+defusedxml
 
 # Document parsing
 pypdf
@@ -45,3 +52,4 @@ Pillow
 unstructured
 openpyxl
 python-pptx
+

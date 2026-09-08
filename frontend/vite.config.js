@@ -22,6 +22,18 @@ export default defineConfig({
       "/presentation": {
         target: "http://127.0.0.1:8080",
         changeOrigin: true
+      },
+      "/traces": {
+        target: "http://127.0.0.1:8080",
+        changeOrigin: true
+      },
+      "/workflow": {
+        target: "http://127.0.0.1:8080",
+        changeOrigin: true
+      },
+      "/evaluation": {
+        target: "http://127.0.0.1:8080",
+        changeOrigin: true
       }
     }
   }

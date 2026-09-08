@@ -12,6 +12,12 @@
     />
 
     <main class="main-content">
+      <EvaluationDashboard
+        v-if="activeModule === 'evaluation'"
+        @open-trace="handleOpenTrace"
+      />
+
+      <template v-else>
       <details v-if="activeModule === 'presentation'" class="presentation-materials-accordion">
         <summary class="presentation-materials-summary">
           <span class="presentation-materials-summary-title">素材</span>
@@ -22,6 +28,16 @@
         />
       </details>
 
+      <div v-if="activeModule === 'research'" class="workflow-launch-bar">
+        <div>
+          <strong>YAML 工作流</strong>
+          <span>运行 research_simple，展示步骤状态、失败点和 checkpoint 恢复。</span>
+        </div>
+        <button type="button" :disabled="isStreaming" @click="runResearchWorkflow(false)">
+          运行工作流
+        </button>
+      </div>
+
       <ChatWindow
         :messages="currentMessages"
         :centered="centered"
@@ -29,6 +45,7 @@
         @request-research-quality="checkResearchQuality"
         @request-research-regenerate="regenerateResearchReport"
         @candidate-selected="handleCandidateSelected"
+        @open-trace="handleOpenTrace"
       >
         <template #input>
           <ChatInput
@@ -47,7 +64,32 @@
           />
         </template>
       </ChatWindow>
+      </template>
     </main>
+
+    <TracePanel
+      :visible="tracePanel.visible"
+      :trace="tracePanel.trace"
+      :loading="tracePanel.loading"
+      :error="tracePanel.error"
+      @close="closeTracePanel"
+      @refresh="refreshTracePanel"
+    />
+
+    <WorkflowPanel
+      :visible="workflowPanel.visible"
+      :workflow-name="workflowPanel.workflowName"
+      :status="workflowPanel.status"
+      :question="workflowPanel.question"
+      :steps="workflowPanel.steps"
+      :progress="workflowPanel.progress"
+      :output="workflowPanel.output"
+      :error="workflowPanel.error"
+      :running="workflowPanel.running"
+      @close="closeWorkflowPanel"
+      @refresh="refreshWorkflowProgress"
+      @resume="resumeWorkflow"
+    />
 
     <LoadingOverlay
       :visible="overlay.visible"
@@ -63,10 +105,13 @@
 import { computed, reactive, ref } from 'vue';
 import ChatInput from './components/ChatInput.vue';
 import ChatWindow from './components/ChatWindow.vue';
+import EvaluationDashboard from './components/EvaluationDashboard.vue';
 import LoadingOverlay from './components/LoadingOverlay.vue';
 import NotificationToast from './components/NotificationToast.vue';
 import PresentationMaterialsPanel from './components/PresentationMaterialsPanel.vue';
 import Sidebar from './components/Sidebar.vue';
+import TracePanel from './components/TracePanel.vue';
+import WorkflowPanel from './components/WorkflowPanel.vue';
 import {
   clearChatSession,
   clearFileSession,
@@ -91,6 +136,11 @@ import {
   streamResearchChat,
   uploadFile,
   uploadTempFile,
+  getTrace,
+  listTraces,
+  runWorkflowStream,
+  getWorkflowProgress,
+  clearWorkflowCheckpoints,
 } from './services/api.js';
 import {
   buildModuleSessionId,
@@ -163,6 +213,20 @@ const MODULES = [
     sendStream: streamPresentationChat,
     defaultStreaming: true,
   },
+  {
+    key: 'evaluation',
+    label: '评测面板',
+    description: 'Benchmark、Trace 与失败归因',
+    hint: 'AgentOps',
+    placeholder: '',
+    allowUpload: false,
+    utility: true,
+    loadHistory: async () => [],
+    clearSession: async () => ({}),
+    sendSingle: async () => ({}),
+    sendStream: async () => {},
+    defaultStreaming: false,
+  },
 ];
 
 const MODULE_MAP = Object.fromEntries(MODULES.map((item) => [item.key, item]));
@@ -189,6 +253,26 @@ const overlay = reactive({
   visible: false,
   title: '处理中...',
   subtitle: '请稍候...',
+});
+const tracePanel = reactive({
+  visible: false,
+  loading: false,
+  trace: null,
+  error: '',
+  runId: '',
+});
+const workflowPanel = reactive({
+  visible: false,
+  running: false,
+  workflowRunId: '',
+  workflowName: 'research_simple',
+  status: 'not_started',
+  question: '',
+  steps: [],
+  progress: null,
+  output: null,
+  error: '',
+  messageId: '',
 });
 
 const currentState = computed(() => moduleStates[activeModule.value]);
@@ -238,6 +322,225 @@ function setOverlay(visible, title = '处理中...', subtitle = '请稍候...') 
   overlay.subtitle = subtitle;
 }
 
+async function loadTrace(runId) {
+  if (!runId) {
+    return;
+  }
+
+  tracePanel.visible = true;
+  tracePanel.loading = true;
+  tracePanel.error = '';
+  tracePanel.runId = runId;
+
+  try {
+    tracePanel.trace = await getTrace(runId);
+  } catch (error) {
+    tracePanel.trace = null;
+    tracePanel.error = error.message || 'Failed to load trace.';
+  } finally {
+    tracePanel.loading = false;
+  }
+}
+
+async function handleOpenTrace(payload = {}) {
+  const runId = payload.runId || payload.run_id || '';
+  if (!runId) {
+    try {
+      const result = await listTraces(currentSessionId.value);
+      const latest = Array.isArray(result?.runs) ? result.runs[0] : null;
+      if (latest?.run_id) {
+        await loadTrace(latest.run_id);
+        return;
+      }
+    } catch (error) {
+      tracePanel.visible = true;
+      tracePanel.error = error.message || 'Failed to list traces.';
+      return;
+    }
+    showNotification('No trace is available for this message.', 'warning');
+    return;
+  }
+  await loadTrace(runId);
+}
+
+function closeTracePanel() {
+  tracePanel.visible = false;
+}
+
+async function refreshTracePanel() {
+  if (tracePanel.runId) {
+    await loadTrace(tracePanel.runId);
+  }
+}
+
+async function maybeRefreshOpenTrace(runId) {
+  if (tracePanel.visible && runId && tracePanel.runId === runId) {
+    await loadTrace(runId);
+  }
+}
+
+function closeWorkflowPanel() {
+  workflowPanel.visible = false;
+}
+
+function upsertWorkflowStep(stepName, patch = {}) {
+  const name = stepName || patch.name || 'step';
+  const index = Number.isFinite(Number(patch.index)) ? Number(patch.index) : workflowPanel.steps.length;
+  const existingIndex = workflowPanel.steps.findIndex((step) => step.name === name || step.index === index);
+  const nextStep = {
+    name,
+    index,
+    status: patch.status || 'pending',
+  };
+
+  if (existingIndex === -1) {
+    workflowPanel.steps = [...workflowPanel.steps, nextStep].sort((a, b) => a.index - b.index);
+    return;
+  }
+
+  workflowPanel.steps = workflowPanel.steps.map((step, idx) =>
+    idx === existingIndex ? { ...step, ...nextStep } : step,
+  );
+}
+
+async function refreshWorkflowProgress() {
+  if (!workflowPanel.workflowName) {
+    return;
+  }
+
+  try {
+    workflowPanel.progress = await getWorkflowProgress({
+      sessionId: currentSessionId.value,
+      workflowName: workflowPanel.workflowName,
+    });
+    workflowPanel.status = workflowPanel.progress?.status || workflowPanel.status;
+    workflowPanel.error = workflowPanel.progress?.error || workflowPanel.error;
+  } catch (error) {
+    workflowPanel.error = error.message || 'Failed to load workflow progress.';
+  }
+}
+
+function formatWorkflowOutput(output) {
+  const value = output?.output || output?.answer || output;
+  if (typeof value === 'string') {
+    return value;
+  }
+  return JSON.stringify(value || {}, null, 2);
+}
+
+async function runResearchWorkflow(resume = false) {
+  if (activeModule.value !== 'research') {
+    activeModule.value = 'research';
+  }
+
+  const state = currentState.value;
+  if (state.isStreaming || workflowPanel.running) {
+    return;
+  }
+
+  const question = (resume ? workflowPanel.question : state.messageInput.trim()) || workflowPanel.question;
+  if (!question) {
+    showNotification('请输入研究问题后再运行工作流。', 'warning');
+    return;
+  }
+
+  const workflowName = 'research_simple';
+  const workflowRunId = `${currentSessionId.value}:${workflowName}`;
+  workflowPanel.visible = true;
+  workflowPanel.running = true;
+  workflowPanel.workflowRunId = workflowRunId;
+  workflowPanel.workflowName = workflowName;
+  workflowPanel.status = 'running';
+  workflowPanel.question = question;
+  workflowPanel.steps = resume ? workflowPanel.steps : [];
+  workflowPanel.output = null;
+  workflowPanel.error = '';
+
+  if (!resume) {
+    await clearWorkflowCheckpoints(currentSessionId.value);
+    appendMessage({ type: 'user', content: question });
+    state.messageInput = '';
+  }
+
+  const assistantId = appendMessage({
+    type: 'assistant',
+    content: resume ? '正在从失败步骤继续 YAML 工作流...' : '正在运行 YAML 工作流...',
+    streaming: true,
+    workflowRunId,
+    workflowName,
+    workflowStatus: 'running',
+    workflowSteps: workflowPanel.steps,
+  });
+  workflowPanel.messageId = assistantId;
+  persistConversation();
+  state.isStreaming = true;
+
+  try {
+    await runWorkflowStream({
+      sessionId: currentSessionId.value,
+      workflowName,
+      params: { question },
+      async onEvent(payload) {
+        if (!payload || typeof payload !== 'object') {
+          return;
+        }
+
+        if (payload.type === 'step_start') {
+          upsertWorkflowStep(payload.step, { index: payload.index, status: 'running' });
+        } else if (payload.type === 'step_end') {
+          upsertWorkflowStep(payload.step, { index: payload.index, status: 'completed' });
+        } else if (payload.type === 'step_error') {
+          workflowPanel.status = 'failed';
+          workflowPanel.error = payload.error || 'Workflow step failed.';
+          upsertWorkflowStep(payload.step, { index: payload.index, status: 'failed' });
+        } else if (payload.type === 'done') {
+          workflowPanel.output = payload.output || {};
+          if (workflowPanel.status !== 'failed') {
+            workflowPanel.status = 'completed';
+          }
+        }
+
+        updateMessage(assistantId, {
+          workflowStatus: workflowPanel.status,
+          workflowSteps: workflowPanel.steps,
+          streaming: workflowPanel.status === 'running',
+        });
+      },
+    });
+
+    await refreshWorkflowProgress();
+    updateMessage(assistantId, {
+      content:
+        workflowPanel.status === 'failed'
+          ? `YAML 工作流失败：${workflowPanel.error || '请查看工作流面板'}`
+          : `YAML 工作流完成。\n\n${formatWorkflowOutput(workflowPanel.output)}`,
+      workflowStatus: workflowPanel.status,
+      workflowSteps: workflowPanel.steps,
+      streaming: false,
+    });
+    persistConversation();
+  } catch (error) {
+    workflowPanel.status = 'failed';
+    workflowPanel.error = error.message;
+    await refreshWorkflowProgress();
+    updateMessage(assistantId, {
+      content: `YAML 工作流失败：${error.message}`,
+      workflowStatus: 'failed',
+      workflowSteps: workflowPanel.steps,
+      streaming: false,
+    });
+    persistConversation();
+    showNotification(`工作流失败：${error.message}`, 'error');
+  } finally {
+    workflowPanel.running = false;
+    state.isStreaming = false;
+  }
+}
+
+async function resumeWorkflow() {
+  await runResearchWorkflow(true);
+}
+
 function persistConversation(moduleKey = activeModule.value) {
   const state = moduleStates[moduleKey];
   if (!state || !hasMeaningfulMessages(state.currentMessages)) {
@@ -261,6 +564,16 @@ function appendMessage(payload, moduleKey = activeModule.value) {
     sources: Array.isArray(payload?.sources) ? payload.sources : [],
     debugEntries: Array.isArray(payload?.debugEntries) ? payload.debugEntries : [],
     artifacts: payload?.artifacts || {},
+    runId: payload?.runId || payload?.run_id || '',
+    tracePath: payload?.tracePath || payload?.trace_path || '',
+    traceMeta: payload?.traceMeta || payload?.trace_meta || {},
+    traceStatus: payload?.traceStatus || payload?.trace_status || 'unknown',
+    workflowRunId: payload?.workflowRunId || payload?.workflow_run_id || '',
+    workflowName: payload?.workflowName || payload?.workflow_name || '',
+    workflowStatus: payload?.workflowStatus || payload?.workflow_status || 'unknown',
+    workflowSteps: Array.isArray(payload?.workflowSteps)
+      ? payload.workflowSteps
+      : (Array.isArray(payload?.workflow_steps) ? payload.workflow_steps : []),
     reportPath: payload?.reportPath || payload?.report_path || '',
     researchSessionId: payload?.researchSessionId || payload?.research_session_id || '',
   });
@@ -411,6 +724,9 @@ async function sendStreamingMessage(question, extraRequest = {}) {
   let sources = [];
   let artifacts = {};
   let researchStages = [];
+  let runId = '';
+  let tracePath = '';
+  let traceMeta = {};
 
   function formatDebugNodeLabel(nodeName) {
     const mapping = {
@@ -456,8 +772,23 @@ async function sendStreamingMessage(question, extraRequest = {}) {
       sessionId: currentSessionId.value,
       question,
       ...extraRequest,
-      onEvent(payload) {
+      async onEvent(payload) {
         if (!payload || typeof payload !== 'object') {
+          return;
+        }
+
+        if (payload.type === 'context') {
+          const data = payload.data || {};
+          runId = data.run_id || data.runId || runId;
+          tracePath = data.trace_path || data.tracePath || tracePath;
+          traceMeta = data.trace || traceMeta;
+          updateMessage(assistantId, {
+            runId,
+            tracePath,
+            traceMeta,
+            traceStatus: 'running',
+            streaming: true,
+          });
           return;
         }
 
@@ -513,6 +844,10 @@ async function sendStreamingMessage(question, extraRequest = {}) {
             researchCandidates: Array.isArray(payload.data?.research_candidates) ? payload.data.research_candidates : [],
             clarificationStatus: payload.data?.clarification_status || payload.data?.clarificationStatus || '',
             reportPath: payload.data?.report_path || payload.data?.reportPath || artifacts?.report_path || '',
+            runId,
+            tracePath,
+            traceMeta,
+            traceStatus: 'completed',
             researchSessionId:
               payload.data?.research_session_id ||
               payload.data?.researchSessionId ||
@@ -521,10 +856,19 @@ async function sendStreamingMessage(question, extraRequest = {}) {
               '',
             streaming: false,
           });
+          await maybeRefreshOpenTrace(runId);
           return;
         }
 
         if (payload.type === 'error') {
+          updateMessage(assistantId, {
+            runId,
+            tracePath,
+            traceMeta,
+            traceStatus: 'failed',
+            streaming: false,
+          });
+          await maybeRefreshOpenTrace(runId);
           throw new Error(payload.data || payload.message || '流式请求失败');
         }
       },
@@ -535,14 +879,23 @@ async function sendStreamingMessage(question, extraRequest = {}) {
       imageMap,
       sources,
       artifacts,
+      runId,
+      tracePath,
+      traceMeta,
+      traceStatus: runId ? 'completed' : 'unknown',
       streaming: false,
     });
     persistConversation();
   } catch (error) {
     updateMessage(assistantId, {
+      runId,
+      tracePath,
+      traceMeta,
+      traceStatus: runId ? 'failed' : 'unknown',
       content: `抱歉，流式响应失败：${error.message}`,
       streaming: false,
     });
+    await maybeRefreshOpenTrace(runId);
     persistConversation();
     showNotification(`流式响应失败：${error.message}`, 'error');
   }

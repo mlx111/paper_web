@@ -1,0 +1,166 @@
+# MyPaperWeb Agentic RAG 全栈 —— 一键启动
+# 使用：
+#   基础栈（Milvus + Redis + 后端 + 前端）：docker compose up -d --build
+#   含 Attu 可视化与 MySQL（登录/历史功能）：  docker compose --profile tools --profile mysql up -d --build
+# 访问：前端 http://localhost:5174 ，后端文档 http://localhost:8080/docs
+# （5173 预留给 llmops-platform；如只跑本项目可改回 5173）
+#
+# API Key 通过宿主机环境变量传入（也可在本目录放 .env 文件）：
+#   $env:DASHSCOPE_API_KEY="sk-xxx"; docker compose up -d
+services:
+  # ---- Milvus 依赖 ----
+  etcd:
+    image: quay.m.daocloud.io/coreos/etcd:v3.5.18
+    restart: unless-stopped
+    environment:
+      - ETCD_AUTO_COMPACTION_MODE=revision
+      - ETCD_AUTO_COMPACTION_RETENTION=1000
+      - ETCD_QUOTA_BACKEND_BYTES=4294967296
+      - ETCD_SNAPSHOT_COUNT=50000
+    volumes:
+      - etcd-data:/etcd
+    command: etcd -advertise-client-urls=http://etcd:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  minio:
+    image: docker.1ms.run/minio/minio:RELEASE.2023-03-20T20-16-18Z
+    restart: unless-stopped
+    environment:
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+    ports:
+      - "9001:9001"
+    volumes:
+      - minio-data:/minio_data
+    command: minio server /minio_data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  standalone:
+    image: docker.1ms.run/milvusdb/milvus:v2.5.10
+    restart: unless-stopped
+    command: ["milvus", "run", "standalone"]
+    security_opt:
+      - seccomp:unconfined
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+    volumes:
+      - milvus-data:/var/lib/milvus
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 30s
+      start_period: 90s
+      timeout: 20s
+      retries: 3
+    ports:
+      - "19530:19530"
+      - "9091:9091"
+    depends_on:
+      etcd:
+        condition: service_started
+      minio:
+        condition: service_started
+
+  # Milvus 可视化控制台（可选）：http://localhost:8001
+  attu:
+    image: docker.1ms.run/zilliz/attu:v2.5
+    restart: unless-stopped
+    profiles: ["tools"]
+    ports:
+      - "8001:3000"
+    environment:
+      MILVUS_URL: standalone:19530
+    depends_on:
+      - standalone
+
+  # ---- 缓存 ----
+  redis:
+    image: docker.1ms.run/library/redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # ---- MySQL（可选：登录认证 / 历史记录功能需要）----
+  mysql:
+    image: docker.1ms.run/library/mysql:8.0
+    restart: unless-stopped
+    profiles: ["mysql"]
+    environment:
+      MYSQL_ROOT_PASSWORD: paperpass
+      MYSQL_DATABASE: paper
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-ppaperpass"]
+      interval: 10s
+      start_period: 30s
+      timeout: 5s
+      retries: 10
+
+  # ---- 后端 ----
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      HOST: 0.0.0.0
+      PORT: "8080"
+      DEBUG: "false"
+      REDIS_URL: redis://redis:6379/0
+      MILVUS_HOST: standalone
+      MILVUS_PORT: "19530"
+      # MySQL 仅在启用 mysql profile 后可用；核心 RAG/Agent 功能不依赖它
+      DB_URL: mysql+aiomysql://root:paperpass@mysql:3306/paper?charset=utf8
+      # 以下 Key 从宿主机环境变量透传（留空则对应功能不可用）
+      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
+      RERANK_API_KEY: ${RERANK_API_KEY:-}
+      WEB_SEARCH_KEY: ${WEB_SEARCH_KEY:-}
+      TAVILY_API_KEY: ${TAVILY_API_KEY:-}
+      CORE_API_KEY: ${CORE_API_KEY:-}
+    volumes:
+      # 路径与代码约定一致（项目根=/app）：
+      - uploads-data:/app/uploads          # 上传文档
+      - app-data:/app/app/data             # 笔记/记忆/checkpoint/研究产物/PPT 素材
+      - workspace-data:/app/workspace      # DeepAgent 文件工作区
+    ports:
+      - "8080:8080"
+    depends_on:
+      standalone:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # ---- 前端 ----
+  # 宿主机端口用 5174（5173 若被 llmops-platform 栈占用会冲突）
+  frontend:
+    build:
+      context: ./frontend
+    restart: unless-stopped
+    ports:
+      - "5174:80"
+    depends_on:
+      - backend
+
+volumes:
+  etcd-data:
+  minio-data:
+  milvus-data:
+  redis-data:
+  mysql-data:
+  uploads-data:
+  app-data:
+  workspace-data:

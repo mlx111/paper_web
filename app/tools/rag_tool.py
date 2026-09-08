@@ -9,6 +9,7 @@ from loguru import logger
 
 from settings.config import config
 from utils.rag_utils import rag_utils_service
+from .tool_result import ToolResult
 
 
 @tool(
@@ -37,14 +38,14 @@ def retrieve_knowledge(query: str) -> Tuple[str, List[Document]]:
         docs = result.get("docs", []) if isinstance(result, dict) else []
         if not docs:
             logger.warning("未检索到相关文档")
-            return "没有找到相关信息。", []
+            return ToolResult.failure("没有找到相关信息。", "NOT_FOUND").to_message_content(), []
 
         context = format_docs(docs)
         logger.info("检索到 {} 个相关文档", len(docs))
         return context, docs
     except Exception as exc:
         logger.error("知识检索工具调用失败: {}", exc)
-        return f"检索知识时发生错误: {exc}", []
+        return ToolResult.failure(str(exc), "TOOL_FAILED").to_message_content(), []
 
 
 def format_docs(docs: List[Document]) -> str:

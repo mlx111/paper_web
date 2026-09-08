@@ -97,8 +97,16 @@ async def chat_stream(request: ChatRequest):
                 chunk_type = chunk.get("type", "unknown")
                 chunk_data = chunk.get("data", None)
 
+                if chunk_type == "context":
+                    yield {
+                        "event": "message",
+                        "data": json.dumps({
+                            "type": "context",
+                            "data": chunk_data
+                        }, ensure_ascii=False)
+                    }
                 # 处理调试类型消息（新增）
-                if chunk_type == "debug":
+                elif chunk_type == "debug":
                     # 调试信息，可以选择发送或忽略
                     yield {
                         "event": "message",

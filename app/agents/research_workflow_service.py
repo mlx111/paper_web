@@ -13,10 +13,10 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Annotated, ClassVar, Literal, Optional, Sequence, TypedDict
 
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, RemoveMessage, SystemMessage, ToolMessage
 from langchain_core.tools import BaseTool, tool
 from langgraph.graph import END, StateGraph
-from langgraph.graph.message import add_messages
+from langgraph.graph.message import REMOVE_ALL_MESSAGES, add_messages
 try:
     from loguru import logger
 except ImportError:  # pragma: no cover - fallback for minimal test environments
@@ -520,7 +520,7 @@ class ResearchWorkflowService:
 
     @staticmethod
     def _internal_message_names() -> set[str]:
-        return {"clarify", "refine_query", "planning", "judge"}
+        return {"clarify", "refine_query", "planning", "judge", "branch_synthesize", "branch_gather", "tools"}
 
     def _extract_final_answer(self, messages: Sequence[BaseMessage]) -> str:
         for message in reversed(list(messages)):
@@ -530,7 +530,7 @@ class ResearchWorkflowService:
                 text = self._extract_text(message)
                 if text:
                     return text
-        return ""
+        return "研究流程未能生成最终报告，请重试或简化研究问题。"
 
     @staticmethod
     def _latest_user_question(messages: Sequence[BaseMessage]) -> str:
@@ -692,6 +692,80 @@ class ResearchWorkflowService:
 
             gathered.append(normalized_branch)
         return gathered
+
+    def _enrich_with_entity_graph(
+        self,
+        branches: list[dict[str, Any]],
+        seen_titles: set[str],
+    ) -> None:
+        """Query EntityLinkStore for papers related to branch queries and append as enrichment sources."""
+        try:
+            from services.entity_extraction_singletons import entity_link_store
+        except Exception:
+            return
+
+        for branch in branches:
+            query = branch.get("branch_query", "")
+            if not query:
+                continue
+            try:
+                matched = entity_link_store.search_entities(query)
+                for entity in matched[:5]:
+                    paper_slugs = entity_link_store.get_related_papers(entity.slug, max_results=3)
+                    for paper_slug in paper_slugs:
+                        paper_entity = entity_link_store.get_entity(paper_slug)
+                        if not paper_entity or paper_entity.type.name != "PAPER":
+                            continue
+                        title = paper_entity.display_name
+                        if title.strip().lower() in seen_titles:
+                            continue
+                        seen_titles.add(title.strip().lower())
+                        branch["branch_sources"].append({
+                            "title": title,
+                            "authors": "",
+                            "venue": paper_entity.metadata.get("venue", ""),
+                            "year": paper_entity.metadata.get("year", ""),
+                            "citation_count": 0,
+                            "url": "",
+                            "abstract": "",
+                            "branch_id": branch.get("branch_id", ""),
+                            "branch_query": branch.get("branch_query", ""),
+                            "enrichment_source": "entity_graph",
+                        })
+            except Exception:
+                continue
+
+    def _rank_branch_sources(
+        self,
+        branches: list[dict[str, Any]],
+        refined_query: str,
+    ) -> None:
+        """Apply SearchRankingService boosts to academic sources in each branch."""
+        try:
+            from services.search_ranking_singletons import search_ranking_service
+        except Exception:
+            return
+
+        for branch in branches:
+            sources = branch.get("branch_sources", [])
+            # Identify academic paper sources (have citation_count + source from academic engines)
+            academic_indices = [
+                i for i, s in enumerate(sources)
+                if s.get("citation_count") is not None
+                and str(s.get("source", "")).strip()
+            ]
+            if not academic_indices:
+                continue
+
+            academic_papers = [sources[i] for i in academic_indices]
+            branch_query = branch.get("branch_query", refined_query) or refined_query
+            try:
+                ranked = search_ranking_service.rank_papers_dicts(academic_papers, branch_query)
+                # Write ranked papers back into branch sources
+                for i, paper in zip(academic_indices, ranked):
+                    sources[i] = paper
+            except Exception:
+                continue
 
     @staticmethod
     def _source_learning(source: dict[str, Any]) -> str:
@@ -1207,9 +1281,10 @@ class ResearchWorkflowService:
             }
 
         def branch_gather_node(state: ResearchState) -> dict[str, Any]:
+            refined_query = state.get("refined_query", "")
             branches = self._gather_branch_sources(
                 list(state.get("research_branches") or []),
-                refined_query=state.get("refined_query", ""),
+                refined_query=refined_query,
             )
             # Flatten and deduplicate across branches by title
             seen_titles: set[str] = set()
@@ -1225,6 +1300,18 @@ class ResearchWorkflowService:
                         deduped.append(src)
                 branch["branch_sources"] = deduped
                 branch_sources.extend(deduped)
+
+            # Enrich with related papers from entity graph
+            self._enrich_with_entity_graph(branches, seen_titles)
+
+            # Rebuild flat list with enrichment sources
+            branch_sources = []
+            for branch in branches:
+                branch_sources.extend(branch.get("branch_sources", []))
+
+            # Apply ranking boosts to academic sources
+            self._rank_branch_sources(branches, refined_query)
+
             summary = "\n".join(
                 f"- {branch['branch_id']}: 收集到 {len(branch.get('branch_sources', []))} 条来源"
                 for branch in branches
@@ -1300,6 +1387,42 @@ class ResearchWorkflowService:
                         tool_call_id=tool_id,
                     )
                 )
+
+            # Hermes-style compression check: if messages + new outputs exceed threshold, compress
+            full_messages = list(state["messages"]) + outputs
+            estimated_tokens = sum(max(1, len(str(getattr(m, "content", ""))) // 2) for m in full_messages)
+            compression_trigger = 16000  # 50% of 32K context window
+
+            if estimated_tokens > compression_trigger:
+                try:
+                    from app.services.context_compressor_service import (
+                        CompressorConfig,
+                        ContextCompressorService,
+                    )
+                    comp_config = CompressorConfig(
+                        context_window_tokens=32000,
+                        compression_threshold_ratio=0.5,
+                        head_protect_messages=3,
+                        tail_token_budget=20000,
+                        llm_enabled=True,
+                    )
+                    compressor = ContextCompressorService(comp_config)
+                    result = compressor.compress_messages(full_messages)
+                    if result.was_compressed:
+                        logger.info(
+                            "[research] tools_node 压缩完成: {} 条 -> {} 条, 节省 {:.1%}{}",
+                            len(full_messages),
+                            len(result.messages),
+                            result.savings_ratio,
+                            " [THRASH]" if result.thrash_warning else "",
+                        )
+                        return {
+                            "messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), *result.messages],
+                            "tool_rounds": state.get("tool_rounds", 0) + 1,
+                        }
+                except Exception:
+                    pass  # Compression failure must not break the agent
+
             return {"messages": outputs, "tool_rounds": state.get("tool_rounds", 0) + 1}
 
         def agent_node(state: ResearchState) -> dict[str, Any]:
@@ -1323,7 +1446,37 @@ class ResearchWorkflowService:
                 if plan_text or refined_query
                 else AGENT_PROMPT
             )
-            response = self.agent_llm.invoke([system_prompt] + list(state["messages"]))
+
+            # Hermes-style compression check (safety net): compress if state messages already large
+            state_messages = list(state["messages"])
+            estimated_tokens = sum(max(1, len(str(getattr(m, "content", ""))) // 2) for m in state_messages)
+            if estimated_tokens > 24000:
+                try:
+                    from app.services.context_compressor_service import (
+                        CompressorConfig,
+                        ContextCompressorService,
+                    )
+                    comp_config = CompressorConfig(
+                        context_window_tokens=32000,
+                        compression_threshold_ratio=0.75,
+                        head_protect_messages=8,
+                        tail_token_budget=28000,
+                        llm_enabled=True,
+                    )
+                    compressor = ContextCompressorService(comp_config)
+                    result = compressor.compress_messages(state_messages)
+                    if result.was_compressed:
+                        logger.info(
+                            "[research] agent_node 压缩完成: {} 条 -> {} 条, 节省 {:.1%}",
+                            len(state_messages),
+                            len(result.messages),
+                            result.savings_ratio,
+                        )
+                        state_messages = result.messages
+                except Exception:
+                    pass
+
+            response = self.agent_llm.invoke([system_prompt] + state_messages)
             if isinstance(response, AIMessage):
                 response.name = "agent"
             return {"messages": [response]}

@@ -373,3 +373,197 @@ async def prepare_research_rerun(request: ClearRequest):
     except Exception as exc:
         logger.error(f"[research {request.session_id}] prepare_rerun failed: {exc}")
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+# ============================================================================
+# Skill endpoints
+# ============================================================================
+
+from services.skill_registry import skill_registry
+from pydantic import BaseModel as PydanticBaseModel
+
+
+class SkillInvokeRequest(PydanticBaseModel):
+    variables: dict[str, str] = {}
+
+
+@router.get("/skills")
+async def list_skills():
+    """List all available research skills with summaries."""
+    try:
+        summaries = skill_registry.list_summaries()
+        return {
+            "code": 200,
+            "message": "success",
+            "data": {"skills": summaries, "count": len(summaries)},
+        }
+    except Exception as exc:
+        logger.error(f"list_skills failed: {exc}")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/skills/search")
+async def search_skills(q: str = "", tag: str = ""):
+    """Search skills by trigger keyword or tag."""
+    try:
+        if tag:
+            results = skill_registry.find_by_tag(tag)
+        elif q:
+            results = skill_registry.find_by_trigger(q)
+        else:
+            results = skill_registry.skills
+        return {
+            "code": 200,
+            "message": "success",
+            "data": {
+                "skills": [
+                    {"name": s.name, "description": s.description, "tags": s.tags}
+                    for s in results
+                ],
+            },
+        }
+    except Exception as exc:
+        logger.error(f"search_skills failed: {exc}")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/skills/{name}")
+async def get_skill(name: str):
+    """Get full skill definition including body template."""
+    try:
+        skill = skill_registry.get(name)
+        if not skill:
+            raise HTTPException(status_code=404, detail=f"Skill not found: {name}")
+        return {
+            "code": 200,
+            "message": "success",
+            "data": {
+                "name": skill.name,
+                "description": skill.description,
+                "version": skill.version,
+                "tags": skill.tags,
+                "trigger_keywords": skill.trigger_keywords,
+                "enabled_tools": skill.enabled_tools,
+                "disabled_tools": skill.disabled_tools,
+                "body_template": skill.body_template,
+            },
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(f"get_skill({name}) failed: {exc}")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.post("/skills/{name}/invoke")
+async def invoke_skill(name: str, request: SkillInvokeRequest):
+    """Resolve a skill's body template with given variables."""
+    try:
+        body = skill_registry.resolve_body(name, request.variables)
+        tools = skill_registry.get_tools(name)
+        disabled = skill_registry.get_disabled_tools(name)
+        return {
+            "code": 200,
+            "message": "success",
+            "data": {
+                "skill_name": name,
+                "resolved_body": body,
+                "enabled_tools": tools,
+                "disabled_tools": disabled,
+            },
+        }
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Skill not found: {name}")
+    except Exception as exc:
+        logger.error(f"invoke_skill({name}) failed: {exc}")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.post("/skills/reload")
+async def reload_skills():
+    """Reload all skills from disk without restarting."""
+    try:
+        skill_registry.reload()
+        return {
+            "code": 200,
+            "message": f"Skills reloaded: {skill_registry.skill_count} loaded",
+            "data": {"count": skill_registry.skill_count},
+        }
+    except Exception as exc:
+        logger.error(f"reload_skills failed: {exc}")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+# ============================================================================
+# Entity graph endpoints
+# ============================================================================
+
+from services.entity_extraction_singletons import entity_link_store
+from models.entity_link import EntityType
+
+
+@router.get("/entities/search")
+async def search_entities(q: str = "", type: str = ""):
+    """Search the entity knowledge graph by name and optional type filter."""
+    try:
+        entity_type = None
+        if type:
+            try:
+                entity_type = EntityType(type)
+            except ValueError:
+                pass
+        entities = entity_link_store.search_entities(q, entity_type)
+        return {
+            "code": 200,
+            "message": "success",
+            "data": {
+                "entities": [e.model_dump() for e in entities],
+                "count": len(entities),
+            },
+        }
+    except Exception as exc:
+        logger.error(f"search_entities failed: {exc}")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/entities/stats")
+async def entity_stats():
+    """Get entity knowledge graph statistics."""
+    try:
+        return {
+            "code": 200,
+            "message": "success",
+            "data": {
+                "entity_count": entity_link_store.entity_count,
+                "link_count": entity_link_store.link_count,
+            },
+        }
+    except Exception as exc:
+        logger.error(f"entity_stats failed: {exc}")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/entities/{slug:path}")
+async def get_entity(slug: str):
+    """Get entity detail with its outgoing links and backlinks."""
+    try:
+        entity = entity_link_store.get_entity(slug)
+        if not entity:
+            raise HTTPException(status_code=404, detail=f"Entity not found: {slug}")
+        links = entity_link_store.get_links(slug)
+        backlinks = entity_link_store.get_backlinks(slug)
+        return {
+            "code": 200,
+            "message": "success",
+            "data": {
+                "entity": entity.model_dump(),
+                "links": [l.model_dump() for l in links],
+                "backlinks": [l.model_dump() for l in backlinks],
+                "backlink_count": len(backlinks),
+            },
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(f"get_entity({slug}) failed: {exc}")
+        raise HTTPException(status_code=500, detail=str(exc))

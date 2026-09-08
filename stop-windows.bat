@@ -23,7 +23,7 @@ echo.
 
 REM Stop Docker containers
 echo [3/3] Stopping Milvus containers...
-docker ps --format "{{.Names}}" | findstr "milvus" >nul 2>&1
+docker ps -a --format "{{.Names}}" | findstr "milvus-" >nul 2>&1
 if not errorlevel 1 (
     docker compose -f vector-database.yml down
     if errorlevel 1 (
@@ -32,7 +32,7 @@ if not errorlevel 1 (
         echo [OK] Milvus containers stopped
     )
 ) else (
-    echo [INFO] Milvus containers are not running
+    echo [INFO] Milvus containers do not exist
 )
 echo.
 

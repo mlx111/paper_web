@@ -150,7 +150,30 @@ mypaperweb/
 
 ## Quick Start
 
-### 1. Prepare Environment Variables
+### Docker (recommended, one command for the full stack)
+
+Requires only Docker Desktop. The compose file orchestrates the backend (FastAPI), frontend (nginx-served React build), Milvus standalone (with etcd + MinIO) and Redis:
+
+```powershell
+# Pass your API keys via host environment variables (compose forwards them into the backend)
+$env:DASHSCOPE_API_KEY="sk-..."
+docker compose up -d --build
+```
+
+Then open:
+
+- Frontend: http://localhost:5174
+- Backend API docs: http://localhost:8080/docs
+- Optional Milvus admin console (Attu): add `--profile tools` → http://localhost:8001
+- Optional MySQL (login / chat history features): add `--profile mysql`
+
+Persisted data (uploaded documents, notes, checkpoints, research artifacts) lives in Docker volumes — run `docker compose down` (without `-v`) to stop while keeping data.
+
+> Port 5174 is used to avoid clashing with the sibling LLMOps platform stack (5173). If you only run this project, change the frontend port mapping to `5173:80` in `docker-compose.yml`.
+
+### Local development (without Docker)
+
+#### 1. Prepare Environment Variables
 
 Copy the example file and fill in your local values:
 
@@ -170,14 +193,6 @@ Attu is exposed at:
 
 ```text
 http://localhost:8000
-```
-
-### 3. Install Backend Dependencies
-
-```bash
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
 ```
 
 ### 4. Start Backend
@@ -275,6 +290,52 @@ npm run build
 - Added session-level long-term notes for preferences, constraints, summaries, and reusable context.
 - Built a LangGraph research workflow with planning, tool execution, and judge feedback.
 - Added evaluation scaffolding for checking routes, tools, keywords, context mode, and answer quality.
+
+## Internship / Resume Kit
+
+The repo includes a focused package for internship applications with five measurable stories. The numbers below should be read as repository benchmarks or evaluation artifacts rather than broad production claims.
+
+### 1. Context Compression (Hermes Agent 风格)
+四阶段上下文压缩管线（修剪 → 边界 → 摘要 → 清洗），默认 32K 窗口、50% 触发阈值。
+- 在当前仓库的 `scripts/benchmark_context_compression.py` 基准中，**超长对话场景**可观察到 **84.5% token 节省**（约 26K → 4K tokens）。
+- 在同一基准的**紧凑配置 / 长对话场景**下，可观察到 **52.5% 节省**，且脚本内定义的 `8/8` 关键检查项全部保留。
+- 多轮模拟中，不同配置下的平均节省约为 **16-19%**；防抖结果应结合具体配置和场景解读。
+- 参考: [Hermes Agent](docs/enhancement-hermes-reference.md)
+
+### 2. Checkpoint 工作流恢复 (AgentSPEX 风格)
+JSON 文件持久化的多步骤工作流中断恢复系统。
+- 在当前 `scripts/benchmark_checkpoint_recovery.py` 基准中，**6/6 场景恢复成功**，覆盖早期 / 中间 / 尾部中断和大规模步骤场景。
+- 同一基准中，已完成步骤保持 **0 步错误重执行**，总计 **50 步被正确跳过**。
+- 恢复耗时属于环境相关指标；当前仓库一次本地运行约为 **47ms 平均恢复时间**，已完成工作流恢复约 **1-2ms**。
+- 参考: [AgentSPEX (arXiv:2604.13346v1)](docs/enhancement-agentspex-reference.md)
+
+### 3. 检索排序增强 (GBrain Source Boost 风格)
+Source Boost + Keyword Boost 重排序，作用于 Research Workflow 中 `academic_tools_service.search_papers()` 返回的**论文搜索结果**（来自 CORE API 等外部引擎），不作用于 Milvus 文档召回。
+- 在当前 `scripts/benchmark_search_ranking.py` 的 **20-query 在线 benchmark** 中，`strict Top-3` 命中率从 **55.0% 提升至 65.0%**，`MRR` 从 **0.018 提升至 0.091**。
+- 同一基准中，`strict Top-5` 保持 **75.0%**，说明当前增强更偏向前排精排，而不是扩大 Top-5 覆盖。
+- 另一个 `scripts/benchmark_ranking_offline.py` 的*离线合成数据集*基准仍可复现更高的 `loose Top-3` 结果，但它和当前在线 benchmark 属于不同评估口径，不应混用。
+- 参考: [GBrain Source Boost](docs/enhancement-gbrain-reference.md)
+### 4. 结构化记忆 (Structured Memory)
+四类型（USER / FEEDBACK / PROJECT / REFERENCE）持久化记忆系统，五道写入门（低价值拦截 → 可推导拦截 → 类型推断 → 内容构建 → 去重）。
+- 在 `scripts/benchmark_structured_memory.py` 中，写入门控部分表现为 **10/10 应保存样本正确写入**、**0 误存 / 0 漏存**。
+- 同一基准中，**5/5 低价值样本被拦截**，写入类型分类结果为 **10/10 正确**。
+- 检索侧指标更适合配套说明：**Top-3 关键词召回率为 89%（8/9）**，同时该脚本中的负样本仍存在误召回，因此这部分更适合描述为“当前关键词召回基准”而非完整记忆质量结论。
+- 证据位置: `scripts/benchmark_structured_memory.py`, `tests/test_structured_memory.py`
+
+### 5. Agent 行为稳定性评估
+11 个端到端测试用例覆盖 quick chat / deep RAG / tool 调用 / notes 读取四类场景。
+- 当前评估框架包含 **11 个端到端 case**，覆盖 quick chat / deep RAG / tool 调用 / notes-aware reasoning，定义见 `app/evaluation/cases.json`。
+- 在已生成并提交的评估报告 `app/evaluation/reports/report.json` 中，当前记录结果为 **11/11 通过**，工具调用准确率 / 关键词命中率 / 证据命中率均为 **100%**。
+- 同一报告中的平均得分为 **0.9818**，README 中可近似记为 **0.98**。
+- 参考: `app/evaluation/`, `scripts/run_eval.py`
+
+详细设计文档: [docs/internship-ready-project-pack.md](docs/internship-ready-project-pack.md)
+
+Suggested supporting checks:
+
+```bash
+pytest tests/test_context_compressor_service.py tests/test_checkpoint.py tests/test_entity_extraction.py tests/test_structured_memory.py tests/test_workflow_engine.py -q
+```
 
 ## Future Improvements
 

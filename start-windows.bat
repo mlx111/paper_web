@@ -33,10 +33,23 @@ echo.
 
 REM Start Milvus containers
 echo [2/4] Starting Milvus containers...
-docker ps --format "{{.Names}}" | findstr "milvus-standalone" >nul 2>&1
+docker ps --format "{{.Names}}" | findstr /x "milvus-standalone" >nul 2>&1
 if not errorlevel 1 (
-    echo [INFO] Milvus container is already running
+    echo [INFO] Milvus standalone is already running
 ) else (
+    docker ps -a --format "{{.Names}}" | findstr "milvus-" >nul 2>&1
+    if not errorlevel 1 (
+        echo [INFO] Found existing Milvus containers, cleaning compose state...
+        docker compose -f vector-database.yml down
+        if errorlevel 1 (
+            echo [ERROR] Failed to clean existing Milvus containers
+            pause
+            exit /b 1
+        )
+        echo [INFO] Removing stale Milvus containers by fixed names...
+        docker rm -f milvus-etcd milvus-minio milvus-standalone milvus-attu >nul 2>&1
+    )
+
     docker compose -f vector-database.yml up -d
     if errorlevel 1 (
         echo [ERROR] Failed to start Milvus containers

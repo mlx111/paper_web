@@ -14,6 +14,8 @@ except ImportError:  # pragma: no cover - exercised only in minimal test envs
     requests = None  # type: ignore[assignment]
 
 
+from services.entity_extraction_singletons import entity_extraction_service, entity_link_store
+
 HttpGet = Callable[..., Any]
 
 
@@ -53,13 +55,20 @@ class AcademicToolsService:
     LangChain tools, and tests without pulling in AgentSPEX's MCP sandbox.
     """
 
-    def __init__(self, http_get: HttpGet | None = None):
+    def __init__(
+        self,
+        http_get: HttpGet | None = None,
+        entity_extraction: Any = None,
+        entity_store: Any = None,
+    ):
         if http_get is not None:
             self.http_get = http_get
         elif requests is not None:
             self.http_get = requests.get
         else:
             self.http_get = self._missing_requests_get
+        self.entity_extraction = entity_extraction
+        self.entity_store = entity_store
 
     @staticmethod
     def _missing_requests_get(*args: Any, **kwargs: Any) -> Any:
@@ -72,6 +81,7 @@ class AcademicToolsService:
         engine: str = "openalex",
         min_year: Optional[int] = None,
         s2_api_key: Optional[str] = None,
+        apply_ranking: bool = True,
     ) -> dict[str, Any]:
         if not query or not query.strip():
             return _err("INVALID_INPUT", "query must be a non-empty string")
@@ -105,6 +115,24 @@ class AcademicToolsService:
             papers = self._search_arxiv(query, result_limit, min_year=min_year)
         else:
             return _err("INVALID_ENGINE", f"unknown engine: {engine}")
+
+        # Entity extraction (non-blocking — failures are silently swallowed)
+        if self.entity_extraction and self.entity_store and papers:
+            try:
+                for paper in papers:
+                    entities, links = self.entity_extraction.extract_from_paper(paper)
+                    self.entity_store.add_entities(entities)
+                    self.entity_store.add_links(links)
+            except Exception:
+                pass
+
+        # Apply ranking (source/keyword/entity boost) to search results
+        if apply_ranking and papers:
+            try:
+                from services.search_ranking_singletons import search_ranking_service
+                papers = search_ranking_service.rank_papers_dicts(papers, query)
+            except Exception:
+                pass
 
         return _ok(
             query=query,
@@ -366,4 +394,7 @@ class AcademicToolsService:
         return "\n\n".join(lines)
 
 
-academic_tools_service = AcademicToolsService()
+academic_tools_service = AcademicToolsService(
+    entity_extraction=entity_extraction_service,
+    entity_store=entity_link_store,
+)

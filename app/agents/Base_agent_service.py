@@ -14,8 +14,9 @@ from context.builder import ContextBuilder
 from context.context_config import ContextConfig
 from models.factory import qwen_model
 from settings.config import config
+from services.run_trace_service import default_run_trace_service
 from utils.history import get_history
-from utils.notes import save_high_value_note
+from utils.notes import save_high_value_note, get_memory_writer, select_relevant_memories
 from utils.rag_utils import rag_utils_service
 
 
@@ -56,6 +57,7 @@ class BaseAgentService(ABC):
 
         self.context_config = self._build_context_config()
         self.context_builder = self._build_context_builder()
+        self.run_trace_service = default_run_trace_service
 
         self.agent = None
         self._agent_initialized = False
@@ -121,24 +123,65 @@ class BaseAgentService(ABC):
 
     def _retrieve_context_notes(self, session_id: str):
         """
-        给 ContextBuilder 用的 notes 读取适配器。
+        给 ContextBuilder 用的 notes 读取适配器（旧系统）。
 
         默认不接 notes。
         如果某个子类需要 notes，可以重写这个方法。
         """
         return None
 
+    def _retrieve_context_memories(self, question: str, limit: int) -> list[dict[str, Any]]:
+        """
+        给 ContextBuilder 用的结构化记忆加载适配器（新系统）。
+
+        使用语义筛选，只加载与当前问题相关的记忆。
+        """
+        try:
+            import asyncio
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # Running in async context — use sync fallback
+                from utils.notes import get_memory_selector
+                selector = get_memory_selector()
+                entries = selector.select_sync(question, max_results=limit)
+                return [
+                    {
+                        "title": e.name,
+                        "content": e.content,
+                        "kind": e.type.value,
+                        "importance": 0.9,
+                        "tags": ["memory", e.type.value],
+                        "metadata": {
+                            "memory_type": e.type.value,
+                            "source_session": e.source_session_id,
+                        },
+                    }
+                    for e in entries
+                ]
+            else:
+                # Synchronous context — run async
+                import asyncio as _asyncio
+                result = _asyncio.run(select_relevant_memories(question, max_results=limit))
+                return result
+        except Exception:
+            return []
+
     def _build_context_builder(self) -> ContextBuilder:
         """
         统一创建 ContextBuilder。
 
-        这样 quick / deep / router 都可以共用同一套上下文工程。
+        现在同时接入旧 notes 系统和新结构化记忆系统。
         """
+        memory_loader = None
+        if self.context_config.enable_structured_memory:
+            memory_loader = self._retrieve_context_memories
+
         return ContextBuilder(
             history_loader=self.history_loader,
             knowledge_retriever=self._retrieve_context_documents,
             parent_chunk_retriever=None,
             notes_loader=self._retrieve_context_notes,
+            memory_loader=memory_loader,
             rerank_fn=None,
             config=self.context_config,
         )
@@ -354,6 +397,10 @@ class BaseAgentService(ABC):
     def _persist_memory(self, session_id: str, question: str, answer: str) -> None:
         """
         Persist a high-value memory note when the response looks reusable.
+
+        Saves to both:
+        1. Legacy NoteService (app/data/notes/)
+        2. New structured Memory system (app/data/memory/)
         """
         if not answer:
             return
@@ -362,6 +409,7 @@ class BaseAgentService(ABC):
         if memory_note is None:
             return
 
+        # Legacy system
         saved = save_high_value_note(
             session_id=session_id,
             title=memory_note["title"],
@@ -372,6 +420,26 @@ class BaseAgentService(ABC):
             source="agent_memory",
             extra=memory_note["extra"],
         )
+
+        # New structured memory system
+        try:
+            from utils.notes import save_memory_from_turn
+            mem_result = save_memory_from_turn(
+                user_message=question,
+                assistant_response=answer,
+                session_id=session_id,
+            )
+            if mem_result:
+                logger.info(
+                    "{} 结构化记忆写入完成，会话: {}，type: {}，title: {}",
+                    self.__class__.__name__,
+                    session_id,
+                    mem_result["type"],
+                    mem_result["title"],
+                )
+        except Exception:
+            pass  # New system failure is non-fatal
+
         if saved is not None:
             logger.info(
                 "{} 记忆写入完成，会话: {}，kind: {}，title: {}",
@@ -393,6 +461,9 @@ class BaseAgentService(ABC):
             evidence_top_k=self.context_evidence_top_k,
         )
 
+    def _get_run_trace_service(self):
+        return getattr(self, "run_trace_service", default_run_trace_service)
+
     def _build_messages(self, question: str, session_id: str):
         """
         把最终要喂给模型的消息统一组装起来。
@@ -404,6 +475,52 @@ class BaseAgentService(ABC):
             messages.append(SystemMessage(content=bundle.final_context))
         messages.append(HumanMessage(content=question))
         return messages, bundle
+
+    @staticmethod
+    def _pre_compress_messages(messages: list, config_obj: Any = None) -> list:
+        """
+        Hermes-style 消息级压缩钩子。
+
+        当消息列表超过上下文窗口 50% 时触发四阶段压缩。
+        当前 base agent 消息列表极短（2 条），实际不会触发；
+        此钩子为研究流程等长消息场景保留统一入口。
+        """
+        if not config_obj:
+            config_obj = ContextConfig()
+
+        if not getattr(config_obj, "enable_hermes_compression", False):
+            return messages
+
+        # Lazy import to avoid circular dependency
+        from app.services.context_compressor_service import (
+            CompressorConfig,
+            ContextCompressorService,
+        )
+
+        comp_config = CompressorConfig(
+            context_window_tokens=getattr(config_obj, "context_window_tokens", 32000),
+            compression_threshold_ratio=getattr(config_obj, "compression_trigger_ratio", 0.5),
+            head_protect_messages=getattr(config_obj, "head_protect_messages", 3),
+            tail_token_budget=getattr(config_obj, "tail_token_budget", 20000),
+            llm_enabled=getattr(config_obj, "summary_llm_enabled", True),
+            summarize_prompt_limit=getattr(config_obj, "summary_prompt_limit", 8000),
+            anti_thrash_min_savings=getattr(config_obj, "anti_thrash_min_savings", 0.1),
+            anti_thrash_consecutive_limit=getattr(config_obj, "anti_thrash_consecutive_limit", 2),
+        )
+
+        compressor = ContextCompressorService(comp_config)
+        result = compressor.compress_messages(messages)
+
+        if result.was_compressed:
+            logger.info(
+                "消息压缩完成: {} 条 -> {} 条, 节省 {:.1%}{}",
+                len(messages),
+                len(result.messages),
+                result.savings_ratio,
+                " [THRASH]" if result.thrash_warning else "",
+            )
+
+        return result.messages
 
     @staticmethod
     def _extract_tool_names(messages) -> list[str]:
@@ -424,6 +541,104 @@ class BaseAgentService(ABC):
             return
         logger.info("{} 本轮未调用工具，会话: {}", self.__class__.__name__, session_id)
 
+    @staticmethod
+    def _estimate_text_tokens(value: str) -> int:
+        text = str(value or "")
+        if not text:
+            return 0
+        return max(1, len(text) // 2)
+
+    @classmethod
+    def _estimate_messages_tokens(cls, messages: list) -> int:
+        total = 0
+        for message in messages or []:
+            total += cls._estimate_text_tokens(getattr(message, "content", message))
+        return total
+
+    @staticmethod
+    def _pick_token_value(payload: dict[str, Any], names: tuple[str, ...]) -> int | None:
+        for name in names:
+            value = payload.get(name)
+            if value is None:
+                continue
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    @classmethod
+    def _normalize_token_usage(cls, payload: Any, source: str) -> dict[str, Any] | None:
+        if not isinstance(payload, dict):
+            return None
+
+        prompt_tokens = cls._pick_token_value(
+            payload,
+            ("prompt_tokens", "input_tokens", "input_token_count", "prompt_token_count"),
+        )
+        completion_tokens = cls._pick_token_value(
+            payload,
+            ("completion_tokens", "output_tokens", "output_token_count", "completion_token_count"),
+        )
+        total_tokens = cls._pick_token_value(
+            payload,
+            ("total_tokens", "total_token_count"),
+        )
+
+        if total_tokens is None and (prompt_tokens is not None or completion_tokens is not None):
+            total_tokens = (prompt_tokens or 0) + (completion_tokens or 0)
+
+        if prompt_tokens is None and completion_tokens is None and total_tokens is None:
+            return None
+
+        return {
+            "prompt_tokens": prompt_tokens or 0,
+            "completion_tokens": completion_tokens or 0,
+            "total_tokens": total_tokens or 0,
+            "estimated": False,
+            "source": source,
+        }
+
+    @classmethod
+    def _extract_token_usage(cls, message: Any) -> dict[str, Any] | None:
+        usage = cls._normalize_token_usage(
+            getattr(message, "usage_metadata", None),
+            "model_usage_metadata",
+        )
+        if usage is not None:
+            return usage
+
+        response_metadata = getattr(message, "response_metadata", None)
+        if isinstance(response_metadata, dict):
+            for key in ("token_usage", "usage", "usage_metadata"):
+                usage = cls._normalize_token_usage(response_metadata.get(key), f"response_metadata.{key}")
+                if usage is not None:
+                    return usage
+            usage = cls._normalize_token_usage(response_metadata, "response_metadata")
+            if usage is not None:
+                return usage
+        return None
+
+    @classmethod
+    def _extract_token_usage_from_messages(cls, messages: list) -> dict[str, Any] | None:
+        for message in reversed(messages or []):
+            usage = cls._extract_token_usage(message)
+            if usage is not None:
+                return usage
+        return None
+
+    @classmethod
+    def _estimate_token_usage(cls, messages: list, answer: str) -> dict[str, Any]:
+        prompt_tokens = cls._estimate_messages_tokens(messages)
+        completion_tokens = cls._estimate_text_tokens(answer)
+        return {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": prompt_tokens + completion_tokens,
+            "estimated": True,
+            "source": "char_estimate",
+        }
+
     @abstractmethod
     def build_agent(self):
         raise NotImplementedError
@@ -443,11 +658,35 @@ class BaseAgentService(ABC):
 
 
     async def query(self, question: str, session_id: str) -> str:
+        trace_run = None
         try:
             await self._initialize_agent()
             logger.info("{} 对话开始，会话: {}", self.__class__.__name__, session_id)
 
-            messages, bundle = self._build_messages(question, session_id)
+            trace_service = self._get_run_trace_service()
+            trace_run = trace_service.start_run(
+                session_id=session_id,
+                route=self.context_mode,
+                question=question,
+                metadata={"agent": self.__class__.__name__, "streaming": False},
+            )
+
+            with trace_service.step(trace_run.run_id, "context_build", "context") as trace_step:
+                trace_step.set_input(
+                    {
+                        "question_chars": len(question or ""),
+                        "mode": self.context_mode,
+                        "top_k": self.context_top_k,
+                    }
+                )
+                messages, bundle = self._build_messages(question, session_id)
+                trace_step.set_output(
+                    {
+                        "context_mode": bundle.mode,
+                        "routing_hints": bundle.routing_hints,
+                        "trace": bundle.trace,
+                    }
+                )
             logger.info(
                 "{} 上下文构建完成，会话: {}，mode: {}，hints: {}",
                 self.__class__.__name__,
@@ -457,11 +696,29 @@ class BaseAgentService(ABC):
             )
             # 加在这里
             
-            result = await self.agent.ainvoke(input={"messages": messages})
+            with trace_service.step(trace_run.run_id, "model_invoke", "model") as trace_step:
+                result = await self.agent.ainvoke(input={"messages": messages})
+                messages_result = result.get("messages", [])
+                if messages_result:
+                    invoke_last_message = messages_result[-1]
+                    invoke_answer = (
+                        invoke_last_message.content
+                        if hasattr(invoke_last_message, "content")
+                        else str(invoke_last_message)
+                    )
+                else:
+                    invoke_answer = ""
+                token_usage = self._extract_token_usage_from_messages(messages_result) or self._estimate_token_usage(messages, invoke_answer)
+                trace_step.set_output(
+                    {
+                        "message_count": len(messages_result),
+                        "token_usage": token_usage,
+                    }
+                )
 
-            messages_result = result.get("messages", [])
             if not messages_result:
                 logger.info("{} 对话完成，但返回为空，会话: {}", self.__class__.__name__, session_id)
+                trace_service.end_run(trace_run.run_id, status="completed")
                 return ""
 
             last_message = messages_result[-1]
@@ -474,8 +731,14 @@ class BaseAgentService(ABC):
                 self._persist_memory(session_id, question, answer)
 
             logger.info("{} 对话完成，会话: {}", self.__class__.__name__, session_id)
+            trace_service.end_run(trace_run.run_id, status="completed")
             return answer
         except Exception as exc:
+            if trace_run is not None:
+                try:
+                    self._get_run_trace_service().end_run(trace_run.run_id, status="failed", error=str(exc))
+                except Exception:
+                    pass
             logger.error("{} 对话失败，会话: {}，错误: {}", self.__class__.__name__, session_id, exc)
             logger.error("异常堆栈:\n{}", "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
             if hasattr(exc, "exceptions"):
@@ -484,11 +747,35 @@ class BaseAgentService(ABC):
             raise
 
     async def query_stream(self, question: str, session_id: str) -> AsyncGenerator[dict[str, Any], None]:
+        trace_run = None
         try:
             await self._initialize_agent()
             logger.info("{} 流式对话开始，会话: {}", self.__class__.__name__, session_id)
 
-            messages, bundle = self._build_messages(question, session_id)
+            trace_service = self._get_run_trace_service()
+            trace_run = trace_service.start_run(
+                session_id=session_id,
+                route=self.context_mode,
+                question=question,
+                metadata={"agent": self.__class__.__name__, "streaming": True},
+            )
+
+            with trace_service.step(trace_run.run_id, "context_build", "context") as trace_step:
+                trace_step.set_input(
+                    {
+                        "question_chars": len(question or ""),
+                        "mode": self.context_mode,
+                        "top_k": self.context_top_k,
+                    }
+                )
+                messages, bundle = self._build_messages(question, session_id)
+                trace_step.set_output(
+                    {
+                        "context_mode": bundle.mode,
+                        "routing_hints": bundle.routing_hints,
+                        "trace": bundle.trace,
+                    }
+                )
             logger.info(
                 "{} 上下文构建完成，会话: {}，mode: {}，hints: {}",
                 self.__class__.__name__,
@@ -506,45 +793,79 @@ class BaseAgentService(ABC):
                     "context_mode": bundle.mode,
                     "routing_hints": bundle.routing_hints,
                     "trace": bundle.trace,
+                    "run_id": trace_run.run_id,
+                    "trace_path": trace_run.trace_path.as_posix(),
                 },
             }
 
             answer_parts: list[str] = []
+            stream_token_usage: dict[str, Any] | None = None
 
-            async for token, metadata in self.agent.astream(input={"messages": messages}, stream_mode="messages"):
-                node_name = metadata.get("langgraph_node", "unknown") if isinstance(metadata, dict) else "unknown"
-                message_type = type(token).__name__
+            with trace_service.step(trace_run.run_id, "model_stream", "model") as trace_step:
+                async for token, metadata in self.agent.astream(input={"messages": messages}, stream_mode="messages"):
+                    node_name = metadata.get("langgraph_node", "unknown") if isinstance(metadata, dict) else "unknown"
+                    message_type = type(token).__name__
+                    stream_token_usage = self._extract_token_usage(token) or stream_token_usage
 
-                if message_type in ("AIMessage", "AIMessageChunk"):
-                    content_blocks = getattr(token, "content_blocks", None)
-                    if content_blocks and isinstance(content_blocks, list):
-                        for block in content_blocks:
-                            if isinstance(block, dict) and block.get("type") == "text":
-                                text_content = block.get("text", "")
-                                if text_content:
-                                    answer_parts.append(text_content)
-                                    yield {"type": "content", "data": text_content, "node": node_name}
+                    if message_type in ("AIMessage", "AIMessageChunk"):
+                        content_blocks = getattr(token, "content_blocks", None)
+                        if content_blocks and isinstance(content_blocks, list):
+                            for block in content_blocks:
+                                if isinstance(block, dict) and block.get("type") == "text":
+                                    text_content = block.get("text", "")
+                                    if text_content:
+                                        answer_parts.append(text_content)
+                                        yield {"type": "content", "data": text_content, "node": node_name}
 
-                elif message_type in ("ToolCallMessage", "ToolCallMessageChunk"):
-                    tool_calls = getattr(token, "tool_calls", None)
-                    if tool_calls and isinstance(tool_calls, list):
-                        for tool_call in tool_calls:
-                            tool_name = tool_call.get("name", "unknown")
-                            logger.info(
-                                "{} 流式调用工具，会话: {}，工具: {}，节点: {}",
-                                self.__class__.__name__,
-                                session_id,
-                                tool_name,
-                                node_name,
-                            )
-                            yield {
-                                "type": "tool_call",
-                                "data": {
-                                    "tool_name": tool_name,
-                                    "arguments": tool_call.get("arguments", {}),
-                                },
-                                "node": node_name,
-                            }
+                        # AIMessageChunk 也可能带 tool_calls（langchain 标准格式）
+                        tool_calls = getattr(token, "tool_calls", None)
+                        if tool_calls and isinstance(tool_calls, list):
+                            for tool_call in tool_calls:
+                                tool_name = tool_call.get("name", "unknown") if isinstance(tool_call, dict) else "unknown"
+                                logger.info(
+                                    "{} 流式调用工具，会话: {}，工具: {}，节点: {}",
+                                    self.__class__.__name__,
+                                    session_id,
+                                    tool_name,
+                                    node_name,
+                                )
+                                yield {
+                                    "type": "tool_call",
+                                    "data": {
+                                        "tool_name": tool_name,
+                                        "arguments": tool_call.get("args") if tool_call.get("args") is not None else tool_call.get("arguments", {}),
+                                    },
+                                    "node": node_name,
+                                }
+
+                    elif message_type in ("ToolCallMessage", "ToolCallMessageChunk"):
+                        tool_calls = getattr(token, "tool_calls", None)
+                        if tool_calls and isinstance(tool_calls, list):
+                            for tool_call in tool_calls:
+                                tool_name = tool_call.get("name", "unknown")
+                                logger.info(
+                                    "{} 流式调用工具，会话: {}，工具: {}，节点: {}",
+                                    self.__class__.__name__,
+                                    session_id,
+                                    tool_name,
+                                    node_name,
+                                )
+                                yield {
+                                    "type": "tool_call",
+                                    "data": {
+                                        "tool_name": tool_name,
+                                        "arguments": tool_call.get("args") if tool_call.get("args") is not None else tool_call.get("arguments", {}),
+                                    },
+                                    "node": node_name,
+                                }
+
+                trace_step.set_output(
+                    {
+                        "answer_chars": len("".join(answer_parts).strip()),
+                        "chunk_count": len(answer_parts),
+                        "token_usage": stream_token_usage or self._estimate_token_usage(messages, "".join(answer_parts).strip()),
+                    }
+                )
 
             final_answer = "".join(answer_parts).strip()
             if final_answer:
@@ -552,8 +873,14 @@ class BaseAgentService(ABC):
                 self._persist_memory(session_id, question, final_answer)
 
             logger.info("{} 流式对话完成，会话: {}", self.__class__.__name__, session_id)
+            trace_service.end_run(trace_run.run_id, status="completed")
             yield {"type": "complete"}
         except Exception as exc:
+            if trace_run is not None:
+                try:
+                    self._get_run_trace_service().end_run(trace_run.run_id, status="failed", error=str(exc))
+                except Exception:
+                    pass
             logger.error("{} 流式对话失败，会话: {}，错误: {}", self.__class__.__name__, session_id, exc)
             logger.error("异常堆栈:\n{}", "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
             if hasattr(exc, "exceptions"):

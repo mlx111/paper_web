@@ -2,16 +2,11 @@
 
 from __future__ import annotations
 
-import json
-
 from langchain_core.tools import tool
 from loguru import logger
 
 from services.paper_refiner_service import paper_refiner_service
-
-
-def _dump(result: dict) -> str:
-    return json.dumps(result, ensure_ascii=False, indent=2)
+from .tool_result import ToolResult
 
 
 @tool(
@@ -24,10 +19,11 @@ def _dump(result: dict) -> str:
 )
 def review_paper_quality(paper_text: str, title: str = "") -> str:
     try:
-        return _dump(paper_refiner_service.review_paper_quality(paper_text, title))
+        data = paper_refiner_service.review_paper_quality(paper_text, title)
+        return ToolResult.success(data=data).to_message_content()
     except Exception as exc:
         logger.error("review_paper_quality failed: {}", exc)
-        return _dump({"ok": False, "error": "TOOL_FAILED", "message": str(exc)})
+        return ToolResult.failure(str(exc), "TOOL_FAILED").to_message_content()
 
 
 @tool(
@@ -45,14 +41,13 @@ def build_citation_pool(
     include_bibtex: bool = False,
 ) -> str:
     try:
-        return _dump(
-            paper_refiner_service.build_citation_pool(
-                topic=topic,
-                max_papers=max_papers,
-                engine=engine,
-                include_bibtex=include_bibtex,
-            )
+        data = paper_refiner_service.build_citation_pool(
+            topic=topic,
+            max_papers=max_papers,
+            engine=engine,
+            include_bibtex=include_bibtex,
         )
+        return ToolResult.success(data=data).to_message_content()
     except Exception as exc:
         logger.error("build_citation_pool failed: {}", exc)
-        return _dump({"ok": False, "error": "TOOL_FAILED", "message": str(exc)})
+        return ToolResult.failure(str(exc), "TOOL_FAILED").to_message_content()

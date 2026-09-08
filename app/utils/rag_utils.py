@@ -16,6 +16,8 @@ from services.mlivus_client_service import MilvusManager
 from services.parent_chunk_service import ParentChunkStore
 from context.builder import ContextBuilder
 from utils.history import get_history
+from utils.notes import get_memory_selector, get_notes
+from services.search_ranking_singletons import search_ranking_service
 
 load_dotenv()
 
@@ -26,10 +28,12 @@ class RagUtilsService:
         embeddings: Embodedings = None,
         milvus_manager: MilvusManager = None,
         parent_chunk_store: ParentChunkStore = None,
+        search_ranking: Any = None,
     ) -> None:
         self.embedding_service = embeddings or Embodedings()
         self.milvus_manager = milvus_manager or MilvusManager()
         self.parent_chunk_store = parent_chunk_store or ParentChunkStore()
+        self.search_ranking = search_ranking
 
         self.ark_api_key = os.getenv("ARK_API_KEY")
         self.model = os.getenv("MODEL")
@@ -53,6 +57,12 @@ class RagUtilsService:
             history_loader=get_history,
             knowledge_retriever=self._retrieve_context_documents,
             parent_chunk_retriever=None,
+            notes_loader=get_notes,
+            memory_loader=lambda q, n: [
+                {"title": e.name, "content": e.content, "kind": f"memory:{e.type.value}",
+                 "importance": 0.9, "tags": []}
+                for e in get_memory_selector().select_sync(q, max_results=n)
+            ],
             rerank_fn=None,
             config=ContextConfig(
                 max_tokens=3000,
@@ -394,6 +404,12 @@ class RagUtilsService:
             merged_docs, merge_meta = self._auto_merge_documents(
                 docs=reranked, top_k=top_k
             )
+            # Apply source + entity boosts after rerank
+            if self.search_ranking:
+                try:
+                    merged_docs = self.search_ranking.apply_boosts(merged_docs, query)
+                except Exception:
+                    pass
             rerank_meta["retrieval_mode"] = "hybrid"
             rerank_meta["candidate_k"] = candidate_k
             rerank_meta["leaf_retrieve_level"] = self.leaf_retrieve_level
@@ -415,6 +431,12 @@ class RagUtilsService:
                 merged_docs, merge_meta = self._auto_merge_documents(
                     docs=reranked, top_k=top_k
                 )
+                # Apply source + entity boosts after rerank (fallback path)
+                if self.search_ranking:
+                    try:
+                        merged_docs = self.search_ranking.apply_boosts(merged_docs, query)
+                    except Exception:
+                        pass
                 rerank_meta["retrieval_mode"] = "dense_fallback"
                 rerank_meta["candidate_k"] = candidate_k
                 rerank_meta["leaf_retrieve_level"] = self.leaf_retrieve_level
@@ -447,7 +469,7 @@ class RagUtilsService:
                 }
 
 
-rag_utils_service = RagUtilsService()
+rag_utils_service = RagUtilsService(search_ranking=search_ranking_service)
 
 
 def generate_step_back_question(query: str) -> str:

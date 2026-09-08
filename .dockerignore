@@ -1,0 +1,14 @@
+frontend/
+volumes/
+uploads/
+file_history/
+runtime/
+scripts/
+docs/
+tests/
+**/__pycache__/
+*.pyc
+.env
+.venv/
+app/data/
+*.png

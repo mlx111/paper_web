@@ -14,6 +14,7 @@ class EvaluationCase:
     mode: str = "deep"
     expected_route: str = "deep"
     expected_tools: list[str] = field(default_factory=list)
+    expected_tool_args: dict[str, dict[str, str]] = field(default_factory=dict)
     expected_keywords: list[str] = field(default_factory=list)
     expected_evidence: list[str] = field(default_factory=list)
     expected_answer_type: str = "analysis"
@@ -42,6 +43,7 @@ class EvaluationResult:
     token_usage: int = 0
     route_correct: bool = False
     tool_correct: bool = False
+    tool_args_correct: bool = False
     keyword_hit: bool = False
     evidence_hit: bool = False
     must_include_hit: bool = False
@@ -51,6 +53,11 @@ class EvaluationResult:
     actual_context_mode: str = ""
     error: str = ""
     score: float = 0.0
+    run_id: str = ""
+    trace_path: str = ""
+    failure_category: str = ""
+    failure_reason: str = ""
+    trace_summary: dict[str, Any] = field(default_factory=dict)
     meta: dict[str, Any] = field(default_factory=dict)
 
 
@@ -64,6 +71,7 @@ class EvaluationSummary:
     passed_cases: int
     route_accuracy: float
     tool_accuracy: float
+    tool_args_accuracy: float
     keyword_hit_rate: float
     evidence_hit_rate: float
     avg_latency_ms: float

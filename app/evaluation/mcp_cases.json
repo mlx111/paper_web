@@ -1,0 +1,31 @@
+﻿[
+  {
+    "id": "mcp_time_ok",
+    "tool_name": "mypaper_get_current_time",
+    "args": {
+      "timezone": "Asia/Shanghai"
+    },
+    "expect_ok": true,
+    "expected_error_code": "",
+    "description": "MCP current time tool should succeed and create an mcp_tool trace step."
+  },
+  {
+    "id": "mcp_web_search_invalid_args",
+    "tool_name": "mypaper_web_search",
+    "args": {
+      "query": "agent",
+      "count": 11
+    },
+    "expect_ok": false,
+    "expected_error_code": "INVALID_ARGS",
+    "description": "MCP web search should reject count outside 1..10 with INVALID_ARGS and trace the failure."
+  },
+  {
+    "id": "mcp_unknown_tool",
+    "tool_name": "unknown_mcp_tool",
+    "args": {},
+    "expect_ok": false,
+    "expected_error_code": "UNKNOWN_TOOL",
+    "description": "Unknown MCP tool should return UNKNOWN_TOOL without crashing the MCP adapter."
+  }
+]

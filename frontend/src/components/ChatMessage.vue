@@ -178,6 +178,17 @@
             重新生成
           </button>
         </div>
+
+        <div v-if="hasTrace" class="message-actions message-actions--trace">
+          <button
+            type="button"
+            class="message-action-button message-trace-button"
+            :class="traceButtonClass"
+            @click="emitOpenTrace"
+          >
+            {{ traceButtonLabel }}
+          </button>
+        </div>
       </template>
 
       <template v-else>
@@ -195,6 +206,7 @@ const emit = defineEmits([
   'request-research-quality',
   'request-research-regenerate',
   'candidate-selected',
+  'open-trace',
 ]);
 
 const props = defineProps({
@@ -320,6 +332,19 @@ const canManageResearchArtifacts = computed(() => {
   );
 });
 
+const hasTrace = computed(() => Boolean(props.message.runId || props.message.run_id));
+const traceStatus = computed(() => props.message.traceStatus || props.message.trace_status || 'unknown');
+const traceButtonLabel = computed(() => {
+  if (traceStatus.value === 'running') return 'Trace 生成中';
+  if (traceStatus.value === 'failed') return '查看失败 Trace';
+  return '查看 Trace';
+});
+const traceButtonClass = computed(() => ({
+  running: traceStatus.value === 'running',
+  failed: traceStatus.value === 'failed',
+  completed: traceStatus.value === 'completed',
+}));
+
 const qualityIssueCount = computed(() => {
   const issues = qualityReport.value?.issues;
   return Array.isArray(issues) ? issues.length : 0;
@@ -351,6 +376,14 @@ function emitResearchRegenerateRequest() {
     content: props.message.content || '',
     artifacts: props.message.artifacts || {},
     sessionId: props.message.artifacts?.session_id || props.message.researchSessionId || '',
+  });
+}
+
+function emitOpenTrace() {
+  emit('open-trace', {
+    runId: props.message.runId || props.message.run_id || '',
+    tracePath: props.message.tracePath || props.message.trace_path || '',
+    messageId: props.message.id,
   });
 }
 
@@ -509,6 +542,33 @@ onUpdated(applyHighlight);
 
 .message-actions--artifact {
   margin-top: 10px;
+}
+
+.message-actions--trace {
+  margin-top: 10px;
+}
+
+.message-trace-button {
+  border-color: #22324c;
+  background: #101827;
+  color: #dbeafe;
+}
+
+.message-trace-button:hover {
+  border-color: #2f6ef2;
+  background: #17243a;
+}
+
+.message-trace-button.running {
+  border-color: #256b96;
+  background: #0d2a3f;
+  color: #bae6fd;
+}
+
+.message-trace-button.failed {
+  border-color: #9f3f3f;
+  background: #34161a;
+  color: #fecaca;
 }
 
 .message-downloads {

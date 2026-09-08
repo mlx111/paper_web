@@ -80,10 +80,6 @@ flowchart LR
 
 `ContextBuilder` 负责统一收集历史、长期记忆和检索候选内容，并进行选择、结构化、压缩和组装。这样不同 Agent 不需要重复拼 prompt，也更容易控制上下文预算。
 
-### 3. 文档 RAG
-
-上传文件后，系统会进行文档解析、切分、向量化和 Milvus 入库。检索时结合 dense embedding 和 sparse BM25-style retrieval，同时保留父子 chunk 结构，方便在多个子 chunk 命中时合并为更完整的父级上下文。
-
 ### 4. 图文文档问答
 
 对于包含图片的 PDF/DOCX，系统会把图片提取到本地运行目录：
@@ -169,14 +165,6 @@ copy .env.example .env
 docker compose -f vector-database.yml up -d
 ```
 
-### 3. 安装后端依赖
-
-```bash
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
-```
-
 ### 4. 启动后端
 
 ```bash
@@ -260,6 +248,54 @@ app/data/images/
 - 支持图文文档问答，可以把 PDF/DOCX 中的图片渲染回回答。
 - 支持流式输出、来源展示、长期记忆和健康检查。
 - 有测试、环境检查脚本和 README 文档，方便别人 clone 后运行。
+
+## 实习 / 简历量化包
+
+仓库里还整理了一组适合实习、简历和面试复用的量化故事。下面的数字更适合表述为“当前仓库中的基准结果或评估产物”，而不是无边界的生产结论。
+
+### 1. 上下文压缩（Hermes Agent 风格）
+
+四阶段上下文压缩管线（修剪 → 边界 → 摘要 → 清洗），默认 32K 窗口、50% 触发阈值。
+
+- 在当前仓库的 `scripts/benchmark_context_compression.py` 基准中，**超长对话场景**可观察到 **84.5% token 节省**（约 26K → 4K tokens）。
+- 在同一基准的**紧凑配置 / 长对话场景**下，可观察到 **52.5% 节省**，且脚本定义的 `8/8` 关键检查项全部保留。
+- 多轮模拟中，不同配置下的平均节省约为 **16-19%**；防抖结果需要结合具体配置和场景一起解读。
+- 参考：`scripts/benchmark_context_compression.py`，以及 [docs/enhancement-hermes-reference.md](docs/enhancement-hermes-reference.md)
+
+### 2. Checkpoint 工作流恢复（AgentSPEX 风格）
+
+基于 JSON 文件持久化的多步骤工作流中断恢复系统。
+
+- 在当前 `scripts/benchmark_checkpoint_recovery.py` 基准中，**6/6 场景恢复成功**，覆盖早期 / 中间 / 尾部中断和大规模步骤场景。
+- 同一基准中，已完成步骤保持 **0 步错误重执行**，总计 **50 步被正确跳过**。
+- 恢复耗时属于环境相关指标；当前仓库一次本地运行约为 **47ms 平均恢复时间**，已完成工作流恢复约 **1-2ms**。
+- 参考：`scripts/benchmark_checkpoint_recovery.py`，以及 [docs/enhancement-agentspex-reference.md](docs/enhancement-agentspex-reference.md)
+
+### 3. 检索排序增强（GBrain Source Boost 风格）
+在 citation-based baseline 之上加入 Source Boost + Keyword Boost 重排序。
+- 在当前 `scripts/benchmark_search_ranking.py` 的 **20 条 query 在线 benchmark** 中，`strict Top-3` 命中率从 **55.0% 提升至 65.0%**，`MRR` 从 **0.018 提升至 0.091**。
+- 同一基准中，`strict Top-5` 保持 **75.0%**，说明当前增强更偏向前排精排，而不是扩大 Top-5 覆盖。
+- 另一个 `scripts/benchmark_ranking_offline.py` 的*离线合成数据集*基准仍可复现更高的 `loose Top-3` 结果，但它和当前在线 benchmark 属于不同评估口径，不应混用。
+- 参考：`scripts/benchmark_ranking_offline.py`，以及 [docs/enhancement-gbrain-reference.md](docs/enhancement-gbrain-reference.md)
+### 4. 结构化记忆（Structured Memory）
+
+四类型（USER / FEEDBACK / PROJECT / REFERENCE）持久化记忆系统，带五道写入门（低价值拦截 → 可推导拦截 → 类型推断 → 内容构建 → 去重）。
+
+- 在 `scripts/benchmark_structured_memory.py` 中，写入门控部分表现为 **10/10 应保存样本正确写入**、**0 误存 / 0 漏存**。
+- 同一基准中，**5/5 低价值样本被拦截**，写入类型分类结果为 **10/10 正确**。
+- 检索侧指标更适合配套说明：**Top-3 关键词召回率为 89%（8/9）**，同时该脚本中的负样本仍存在误召回，因此这部分更适合描述为“当前关键词召回基准”而非完整记忆质量结论。
+- 证据位置：`scripts/benchmark_structured_memory.py`、`tests/test_structured_memory.py`
+
+### 5. Agent 行为稳定性评估
+
+端到端评估覆盖 quick chat / deep RAG / tool 调用 / notes-aware reasoning 四类场景。
+
+- 当前评估框架包含 **11 个端到端 case**，定义见 `app/evaluation/cases.json`。
+- 在已生成并提交的评估报告 `app/evaluation/reports/report.json` 中，当前记录结果为 **11/11 通过**，工具调用准确率 / 关键词命中率 / 证据命中率均为 **100%**。
+- 同一报告中的平均得分为 **0.9818**，简历或 README 中可近似记为 **0.98**。
+- 参考：`app/evaluation/`、`scripts/run_eval.py`
+
+详细设计文档：[docs/internship-ready-project-pack.md](docs/internship-ready-project-pack.md)
 
 ## 后续优化方向
 

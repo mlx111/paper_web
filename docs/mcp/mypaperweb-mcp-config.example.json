@@ -1,0 +1,11 @@
+﻿{
+  "mcpServers": {
+    "mypaperweb-tools": {
+      "command": "D:\\anaconda3\\envs\\deepagents\\python.exe",
+      "args": [
+        "F:\\longchain\\mypaperweb\\app\\mcp_server.py"
+      ],
+      "cwd": "F:\\longchain\\mypaperweb\\app"
+    }
+  }
+}

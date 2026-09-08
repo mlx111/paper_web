@@ -262,7 +262,18 @@ async def chat_stream(request: ChatRequest):
                 chunk_type = chunk.get("type", "unknown")
                 chunk_data = chunk.get("data", None)
 
-                if chunk_type == "debug":
+                if chunk_type == "context":
+                    yield {
+                        "event": "message",
+                        "data": json.dumps(
+                            {
+                                "type": "context",
+                                "data": chunk_data,
+                            },
+                            ensure_ascii=False,
+                        ),
+                    }
+                elif chunk_type == "debug":
                     yield {
                         "event": "message",
                         "data": json.dumps(

@@ -1,7 +1,9 @@
 from pathlib import Path
+from typing import Any
 
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, FilesystemBackend, StateBackend, StoreBackend
+from langchain_core.messages import SystemMessage
 
 from agents.Base_agent_service import BaseAgentService
 from tools import (
@@ -42,20 +44,96 @@ class DeepAgentService(BaseAgentService):
         quick 不会被长期记忆拖慢。
         """
         return get_notes(session_id)
+
+    def default_tools(self) -> list:
+        return [
+            retrieve_knowledge,
+            get_current_time,
+            web_search,
+            academic_search_papers,
+            get_paper_abstract,
+            get_paper_bibtex,
+            review_paper_quality,
+            build_citation_pool,
+            extract_document_text,
+        ]
+
+    def _get_skill_registry(self):
+        registry = getattr(self, "skill_registry", None)
+        if registry is not None:
+            return registry
+
+        from services.skill_registry import skill_registry
+
+        self.skill_registry = skill_registry
+        return skill_registry
+
+    def select_skill(self, question: str) -> dict[str, Any] | None:
+        """
+        Select a task-level skill by trigger keywords.
+
+        Tool is the executable layer, MCP is the protocol exposure layer, and
+        Skill is the task procedure layer that constrains process and tools.
+        """
+        registry = self._get_skill_registry()
+        matches = registry.find_by_trigger(question or "")
+        if not matches:
+            return None
+
+        skill = matches[0]
+        variables = {"question": question or ""}
+        return {
+            "name": getattr(skill, "name", ""),
+            "description": getattr(skill, "description", ""),
+            "body": skill.resolve_body(variables) if hasattr(skill, "resolve_body") else "",
+            "enabled_tools": list(getattr(skill, "enabled_tools", []) or []),
+            "disabled_tools": list(getattr(skill, "disabled_tools", []) or []),
+        }
+
+    @staticmethod
+    def _tool_name(tool) -> str:
+        return getattr(tool, "name", None) or getattr(tool, "__name__", "")
+
+    def filter_tools_for_skill(self, tools: list, selected_skill: dict[str, Any] | None) -> list:
+        if not selected_skill:
+            return list(tools)
+
+        enabled = set(selected_skill.get("enabled_tools") or [])
+        disabled = set(selected_skill.get("disabled_tools") or [])
+        if "*" in disabled:
+            return []
+
+        filtered = []
+        for tool in tools:
+            name = self._tool_name(tool)
+            if enabled and name not in enabled:
+                continue
+            if name in disabled:
+                continue
+            filtered.append(tool)
+        return filtered
+
+    def _build_messages(self, question: str, session_id: str):
+        messages, bundle = super()._build_messages(question, session_id)
+        selected_skill = self.select_skill(question)
+        if not selected_skill:
+            bundle.trace["selected_skill"] = None
+            return messages, bundle
+
+        skill_body = selected_skill.get("body") or ""
+        bundle.trace["selected_skill"] = {
+            "name": selected_skill.get("name", ""),
+            "enabled_tools": selected_skill.get("enabled_tools", []),
+            "disabled_tools": selected_skill.get("disabled_tools", []),
+        }
+        if skill_body:
+            messages = [SystemMessage(content=skill_body), *messages]
+        return messages, bundle
+
     def build_agent(self):
         return create_deep_agent(
             model=self.model,
-            tools=[
-                retrieve_knowledge,
-                get_current_time,
-                web_search,
-                academic_search_papers,
-                get_paper_abstract,
-                get_paper_bibtex,
-                review_paper_quality,
-                build_citation_pool,
-                extract_document_text,
-            ],
+            tools=self.default_tools(),
             subagents=[],
             skills=["/skills/"],
             memory=[],
