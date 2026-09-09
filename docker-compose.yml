@@ -125,12 +125,22 @@ services:
       MILVUS_PORT: "19530"
       # MySQL 仅在启用 mysql profile 后可用；核心 RAG/Agent 功能不依赖它
       DB_URL: mysql+aiomysql://root:paperpass@mysql:3306/paper?charset=utf8
-      # 以下 Key 从宿主机环境变量透传（留空则对应功能不可用）
+      # 以下 Key 从宿主机环境变量/.env 透传（留空则对应功能不可用）
       DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
       RERANK_API_KEY: ${RERANK_API_KEY:-}
       WEB_SEARCH_KEY: ${WEB_SEARCH_KEY:-}
       TAVILY_API_KEY: ${TAVILY_API_KEY:-}
       CORE_API_KEY: ${CORE_API_KEY:-}
+      # Phase 6: Langfuse 可观测 + 模型路由 + 语义缓存（A/B 开关）
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      LANGFUSE_HOST: http://host.docker.internal:3000
+      MODEL_ROUTING_ENABLED: ${MODEL_ROUTING_ENABLED:-false}
+      ROUTING_SIMPLE_MODEL: ${ROUTING_SIMPLE_MODEL:-qwen-turbo}
+      SEMANTIC_CACHE_ENABLED: ${SEMANTIC_CACHE_ENABLED:-false}
+      SEMANTIC_CACHE_THRESHOLD: ${SEMANTIC_CACHE_THRESHOLD:-0.92}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       # 路径与代码约定一致（项目根=/app）：
       - uploads-data:/app/uploads          # 上传文档

@@ -55,6 +55,16 @@ def _get_int(name: str, default: int) -> int:
         return default
 
 
+def _get_float(name: str, default: float) -> float:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _get_str(name: str, default: str) -> str:
     return os.getenv(name, default)
 
@@ -140,6 +150,19 @@ class Settings:
     mcp_monitor_url: str = field(
         default_factory=lambda: _get_str("MCP_MONITOR_URL", "http://localhost:8004/mcp")
     )
+
+    # ---- Phase 6: 模型路由 + 语义缓存 + Langfuse 可观测 ----
+    # 简单问题（实体问答/寒暄）路由到廉价模型，复杂问题走默认模型
+    model_routing_enabled: bool = field(default_factory=lambda: _get_bool("MODEL_ROUTING_ENABLED", False))
+    routing_simple_model: str = field(default_factory=lambda: _get_str("ROUTING_SIMPLE_MODEL", "qwen-turbo"))
+    # Langfuse v2 自托管（llmops 栈提供），host 指向宿主机回环
+    langfuse_enabled: bool = field(default_factory=lambda: _get_bool("LANGFUSE_ENABLED", True))
+    langfuse_host: str = field(default_factory=lambda: _get_str("LANGFUSE_HOST", "http://host.docker.internal:3000"))
+    # 语义缓存：仅 quick 问答路径，DashScope embedding + 余弦相似度
+    semantic_cache_enabled: bool = field(default_factory=lambda: _get_bool("SEMANTIC_CACHE_ENABLED", False))
+    semantic_cache_threshold: float = field(default_factory=lambda: _get_float("SEMANTIC_CACHE_THRESHOLD", 0.92))
+    semantic_cache_ttl_hours: int = field(default_factory=lambda: _get_int("SEMANTIC_CACHE_TTL_HOURS", 72))
+    semantic_cache_max_entries: int = field(default_factory=lambda: _get_int("SEMANTIC_CACHE_MAX_ENTRIES", 500))
 
     @property
     def DASHSCOPE_API_KEY(self) -> str:

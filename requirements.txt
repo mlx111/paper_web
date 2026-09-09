@@ -29,6 +29,9 @@ langchain-qwq
 deepagents
 mcp
 
+# Langfuse v2（LLM 可观测：trace + token 成本）
+langfuse<3.0.0
+
 # Retrieval and vector storage
 pymilvus
 elasticsearch

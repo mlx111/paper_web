@@ -6,7 +6,7 @@ import logging
 import time
 from typing import Any
 
-from .dispatcher import get_target_agent
+from .dispatcher import get_target_agent, resolve_target_agent
 from .failure_classifier import classify_failure
 from .loader import load_cases
 from .metrics import (
@@ -264,6 +264,94 @@ class EvaluationRunner:
         }
         return answer_text, list(dict.fromkeys(tool_names)), tool_calls, meta
 
+    def _lookup_semantic_cache(self, question: str, mode: str) -> dict[str, Any] | None:
+        """语义缓存查询：仅 quick 轻量问答路径，命中则完全跳过 agent 调用。"""
+        if mode != "quick":
+            return None
+        try:
+            from settings.config import config as app_config
+
+            if not app_config.semantic_cache_enabled:
+                return None
+            from services.semantic_cache_service import semantic_cache_service
+
+            hit = semantic_cache_service.lookup(question)
+        except Exception:
+            return None
+        if not hit:
+            return None
+        return {
+            "answer": hit["answer"],
+            "tool_names": [],
+            "tool_calls": [],
+            "meta": {
+                "cache_hit": True,
+                "cache_type": hit.get("cache_type"),
+                "cache_similarity": hit.get("similarity"),
+                "cached_query": hit.get("cached_query"),
+                "model": hit.get("model") or "cache",
+                "routed": False,
+            },
+            "token_usage": {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+                "estimated": False,
+                "source": "semantic_cache",
+            },
+            "error": "",
+        }
+
+    def _store_semantic_cache(
+        self,
+        question: str,
+        answer: str,
+        mode: str,
+        model: str,
+        token_usage: dict[str, Any] | None,
+    ) -> None:
+        if mode != "quick" or not answer:
+            return
+        try:
+            from settings.config import config as app_config
+
+            if not app_config.semantic_cache_enabled:
+                return
+            from services.semantic_cache_service import semantic_cache_service
+
+            semantic_cache_service.store(
+                question,
+                answer,
+                model=model,
+                prompt_tokens=int((token_usage or {}).get("prompt_tokens") or 0),
+                completion_tokens=int((token_usage or {}).get("completion_tokens") or 0),
+            )
+        except Exception:
+            pass
+
+    def _load_token_usage(self, run_id: str) -> dict[str, Any] | None:
+        """从本次问答的 trace 文件中提取模型真实/估算 token 用量。"""
+        if not run_id:
+            return None
+        try:
+            payload = default_run_trace_service.load_run(run_id)
+        except Exception:
+            return None
+        for step in reversed(payload.get("steps") or []):
+            if not isinstance(step, dict):
+                continue
+            output = step.get("output")
+            if isinstance(output, dict) and isinstance(output.get("token_usage"), dict):
+                usage = output["token_usage"]
+                return {
+                    "prompt_tokens": int(usage.get("prompt_tokens") or 0),
+                    "completion_tokens": int(usage.get("completion_tokens") or 0),
+                    "total_tokens": int(usage.get("total_tokens") or 0),
+                    "estimated": bool(usage.get("estimated", False)),
+                    "source": str(usage.get("source") or "trace"),
+                }
+        return None
+
     async def invoke_agent(self, question: str, mode: str = "deep", session_id: str = "") -> dict[str, Any]:
         """Run a single agent query and return its answer + tool-call trajectory.
 
@@ -271,17 +359,39 @@ class EvaluationRunner:
         (``POST /evaluation/target``) so external LLMOps platforms can drive
         the agent and collect its tool-call trajectory without coupling to the
         internal EvaluationCase model.
+
+        Phase 6: quick 路径支持语义缓存（命中跳过 agent）与意图感知模型路由，
+        并透出 token_usage 供评测平台做成本量化。
         """
-        agent = get_target_agent(mode)
+        cache_hit = self._lookup_semantic_cache(question, mode)
+        if cache_hit is not None:
+            return cache_hit
+
+        agent, routing_info = resolve_target_agent(mode, question)
         try:
             answer_text, tool_names, tool_calls, meta = await self._invoke_with_stream(
                 agent, question, session_id
             )
+            meta.update(routing_info)
+            meta.setdefault("model", getattr(agent, "model_name", ""))
+
+            token_usage = self._load_token_usage(str(meta.get("run_id") or ""))
+            if token_usage:
+                meta["token_usage"] = token_usage
+            # 语义缓存写入不依赖 token_usage 是否提取到（缓存的是 answer）；
+            # _store_semantic_cache 内部已判断 quick 模式与开关
+            self._store_semantic_cache(
+                question, answer_text, mode,
+                model=str(meta.get("model") or ""),
+                token_usage=token_usage,
+            )
+
             return {
                 "answer": answer_text,
                 "tool_names": tool_names,
                 "tool_calls": tool_calls,
                 "meta": meta,
+                "token_usage": token_usage,
                 "error": "",
             }
         except Exception as exc:  # noqa: BLE001 - surface failure as a failed trajectory

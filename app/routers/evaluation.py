@@ -203,12 +203,35 @@ async def evaluation_target(body: TargetEvaluationRequest):
     error = result.get("error") or ""
     steps.append({"type": "final", "content": answer})
 
+    meta = result.get("meta") or {}
+    token_usage = result.get("token_usage") or {}
+    if not token_usage:
+        # 兜底：trace 提取失败时按字符估算（与内部口径一致：len//2）
+        token_usage = {
+            "prompt_tokens": max(0, len(body.query) // 2),
+            "completion_tokens": max(0, len(answer) // 2),
+            "total_tokens": max(0, (len(body.query) + len(answer)) // 2),
+            "estimated": True,
+            "source": "char_estimate",
+        }
+
     payload: dict[str, Any] = {
         "answer": answer,
         "success": bool(answer) and not error,
         "steps": steps,
         "mode": mode,
-        "run_id": str((result.get("meta") or {}).get("run_id") or ""),
+        "run_id": str(meta.get("run_id") or ""),
+        "model": str(meta.get("model") or ""),
+        "routed": bool(meta.get("routed")),
+        "route_tier": meta.get("route_tier"),
+        "cache_hit": bool(meta.get("cache_hit")),
+        "token_usage": {
+            "prompt_tokens": int(token_usage.get("prompt_tokens") or 0),
+            "completion_tokens": int(token_usage.get("completion_tokens") or 0),
+            "total_tokens": int(token_usage.get("total_tokens") or 0),
+            "estimated": bool(token_usage.get("estimated", False)),
+            "source": str(token_usage.get("source") or ""),
+        },
         # Flat aliases kept for tool_calling / single-tool metric compatibility.
         "tool_called": (result.get("tool_names") or [None])[0] if result.get("tool_names") else None,
         "tool_args": tool_calls[0].get("args") if tool_calls and isinstance(tool_calls[0].get("args"), dict) else None,

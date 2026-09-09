@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 import traceback
 from abc import ABC, abstractmethod
@@ -44,8 +45,8 @@ class BaseAgentService(ABC):
     context_max_evidence_items: int = 6
     context_max_chars: int = 12000
 
-    def __init__(self, streaming: bool = False, history_loader=None):
-        self.model_name = config.rag_model
+    def __init__(self, streaming: bool = False, history_loader=None, model_name: str | None = None):
+        self.model_name = model_name or config.rag_model
         self.streaming = streaming
         self.prompt_dir = Path(__file__).resolve().parent.parent / "prompt"
         self.system_prompt_file = self.get_system_prompt_file()
@@ -53,7 +54,7 @@ class BaseAgentService(ABC):
 
         self.history_loader = history_loader or get_history
         self.store = InMemoryStore()
-        self.model = qwen_model.init_model(streaming)
+        self.model = qwen_model.init_model(streaming, model=self.model_name)
 
         self.context_config = self._build_context_config()
         self.context_builder = self._build_context_builder()
@@ -464,6 +465,46 @@ class BaseAgentService(ABC):
     def _get_run_trace_service(self):
         return getattr(self, "run_trace_service", default_run_trace_service)
 
+    def _build_langfuse_callbacks(self, question: str, session_id: str) -> list | None:
+        """Langfuse v2 CallbackHandler：一次问答 = 一条 trace（LLM/工具 span 树自动生成）。
+
+        未配置 keys / SDK 缺失时静默返回 None，不影响问答主链路。
+        """
+        if not config.langfuse_enabled:
+            return None
+        if not os.getenv("LANGFUSE_PUBLIC_KEY") or not os.getenv("LANGFUSE_SECRET_KEY"):
+            return None
+        try:
+            os.environ.setdefault("LANGFUSE_HOST", config.langfuse_host)
+            from langfuse.langchain import CallbackHandler
+
+            handler = CallbackHandler(
+                session_id=session_id,
+                user_id="mypaperweb",
+                trace_name=f"mypaperweb-{self.context_mode}",
+                trace_metadata={
+                    "mode": self.context_mode,
+                    "agent": type(self).__name__,
+                    "model": self.model_name,
+                    "question_chars": len(question or ""),
+                },
+                trace_tags=[self.context_mode, "mypaperweb"],
+            )
+            return [handler]
+        except Exception as exc:
+            logger.warning("Langfuse 回调初始化失败（不影响问答）: {}", exc)
+            return None
+
+    @staticmethod
+    def _flush_langfuse(callbacks: list | None) -> None:
+        for callback in callbacks or []:
+            flush = getattr(callback, "flush", None)
+            if callable(flush):
+                try:
+                    flush()
+                except Exception:
+                    pass
+
     def _build_messages(self, question: str, session_id: str):
         """
         把最终要喂给模型的消息统一组装起来。
@@ -694,10 +735,14 @@ class BaseAgentService(ABC):
                 bundle.mode,
                 bundle.routing_hints,
             )
-            # 加在这里
-            
+            # Phase 6: Langfuse trace（一次问答 = 一条 trace，LLM/工具 span 自动生成）
+            callbacks = self._build_langfuse_callbacks(question, session_id)
+
             with trace_service.step(trace_run.run_id, "model_invoke", "model") as trace_step:
-                result = await self.agent.ainvoke(input={"messages": messages})
+                result = await self.agent.ainvoke(
+                    input={"messages": messages},
+                    config={"callbacks": callbacks} if callbacks else None,
+                )
                 messages_result = result.get("messages", [])
                 if messages_result:
                     invoke_last_message = messages_result[-1]
@@ -732,6 +777,7 @@ class BaseAgentService(ABC):
 
             logger.info("{} 对话完成，会话: {}", self.__class__.__name__, session_id)
             trace_service.end_run(trace_run.run_id, status="completed")
+            self._flush_langfuse(callbacks)
             return answer
         except Exception as exc:
             if trace_run is not None:
@@ -800,6 +846,8 @@ class BaseAgentService(ABC):
 
             answer_parts: list[str] = []
             stream_token_usage: dict[str, Any] | None = None
+            # Phase 6: Langfuse trace（一次问答 = 一条 trace，LLM/工具 span 自动生成）
+            callbacks = self._build_langfuse_callbacks(question, session_id)
 
             # 流式 tool_call 累积器：stream_mode="messages" 下每个 AIMessageChunk
             # 的 tool_call args 是 JSON 分片（长参数如多智能体 task 分派会跨多片）。
@@ -839,7 +887,11 @@ class BaseAgentService(ABC):
                 return events
 
             with trace_service.step(trace_run.run_id, "model_stream", "model") as trace_step:
-                async for token, metadata in self.agent.astream(input={"messages": messages}, stream_mode="messages"):
+                async for token, metadata in self.agent.astream(
+                    input={"messages": messages},
+                    stream_mode="messages",
+                    config={"callbacks": callbacks} if callbacks else None,
+                ):
                     node_name = metadata.get("langgraph_node", "unknown") if isinstance(metadata, dict) else "unknown"
                     message_type = type(token).__name__
                     stream_token_usage = self._extract_token_usage(token) or stream_token_usage
@@ -926,6 +978,7 @@ class BaseAgentService(ABC):
 
             logger.info("{} 流式对话完成，会话: {}", self.__class__.__name__, session_id)
             trace_service.end_run(trace_run.run_id, status="completed")
+            self._flush_langfuse(callbacks)
             yield {"type": "complete"}
         except Exception as exc:
             if trace_run is not None:

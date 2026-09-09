@@ -17,9 +17,11 @@ class QwenModel():
         if self.BASE_URL:
             os.environ["DASHSCOPE_API_BASE"] = self.BASE_URL
         
-    def init_model(self,steram:bool):
-        model=ChatQwen(
-            model=self.model_name,
+    def init_model(self, steram: bool, model: str | None = None):
+        """创建 ChatQwen；model 传入时覆写默认模型（模型路由用）。"""
+        model = model or self.model_name
+        return ChatQwen(
+            model=model,
             api_key=SecretStr(self.api_key),
             base_url=self.BASE_URL,
             temperature=0.7,
@@ -27,6 +29,5 @@ class QwenModel():
             http_client=create_llm_http_client(),
             http_async_client=create_llm_async_http_client(),
         )
-        return model
 
 qwen_model=QwenModel()
