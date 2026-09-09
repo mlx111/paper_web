@@ -12,6 +12,7 @@ class ChatRequest(BaseModel):
 
     id: str = Field(..., description="会话 ID", alias="Id")
     question: str = Field(..., description="用户问题", alias="Question")
+    mode: str | None = Field(default=None, description="研究模式：workflow 工作流 / multi 多智能体", alias="mode")
 
     model_config = ConfigDict(
         populate_by_name=True,

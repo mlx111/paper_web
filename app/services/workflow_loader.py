@@ -47,6 +47,10 @@ class StepDef:
     branches: list[StepDef] = field(default_factory=list)
     workflow: str = ""
     params: dict[str, Any] = field(default_factory=dict)
+    # call_service — invoke a registered Python service method directly
+    service: str = ""
+    method: str = ""
+    args: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -233,6 +237,18 @@ class WorkflowLoader:
                     params=dict(call.get("params", {}) or {}),
                     save_as=str(call.get("save_as", "")),
                 )
+
+        # call_service — direct Python service method invocation
+        if "call_service" in raw:
+            cs = raw["call_service"]
+            return StepDef(
+                type="call_service",
+                name=str(cs.get("name", "")),
+                service=str(cs.get("service", "")),
+                method=str(cs.get("method", "")),
+                args=dict(cs.get("args", {}) or {}),
+                save_as=str(cs.get("save_as", "")),
+            )
 
         raise ValueError(f"Unknown step type in: {list(raw.keys())}")
 

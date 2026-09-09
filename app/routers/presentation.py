@@ -101,7 +101,7 @@ async def download_artifact(session_id: str, artifact_name: str):
 @router.post("/chat")
 async def chat(request: PresentationRequest):
     try:
-        result = presentation_workflow_service.run_topic(
+        result = await presentation_workflow_service.run_topic_via_workflow(
             request.session_id,
             request.topic,
             request.target_pages,

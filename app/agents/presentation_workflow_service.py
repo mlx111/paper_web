@@ -19,6 +19,10 @@ from services.presentation_design_service import PresentationDesignService, pres
 from services.presentation_material_service import PresentationMaterialService, presentation_material_service
 from services.presentation_outline_service import PresentationOutlineService, presentation_outline_service
 from services.presentation_schema_service import PresentationSchemaService, presentation_schema_service
+from services.workflow_loader import WorkflowLoader
+from services.workflow_engine import WorkflowEngine
+from services.checkpoint_store import CheckpointStore
+from services.checkpoint_manager import CheckpointManager
 from tools.websearch_tool import web_search
 
 
@@ -99,7 +103,10 @@ class PresentationWorkflowService:
         }
 
     def _web_search(self, query: str):
-        return web_search(query=query)
+        try:
+            return web_search.invoke({"query": query})
+        except (TypeError, AttributeError):
+            return web_search(query=query)
 
     def _gather(self, topic: str, use_web_search: bool = True) -> list[dict[str, Any]]:
         if not use_web_search:
@@ -191,6 +198,85 @@ class PresentationWorkflowService:
         if not final_report:
             raise ValueError(f"Missing research final report for session: {research_session_id}")
         return artifacts
+
+    # ------------------------------------------------------------------
+    # YAML workflow entry points (callable from call_service steps)
+    # ------------------------------------------------------------------
+
+    def prepare_context(
+        self,
+        session_id: str,
+        topic: str | None,
+        target_pages: int | None = None,
+        research_session_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Build the initial context for the presentation pipeline.
+
+        Handles both the web-search branch and the research-report bridge branch.
+        """
+        user_materials = self._load_user_materials(session_id)
+        materials = list(user_materials.get("materials") or [])
+        material_gathered = [self._material_to_gathered_item(m) for m in materials]
+
+        if research_session_id:
+            research_artifacts = self._load_research_bridge(research_session_id)
+            report_text = str(research_artifacts.get("final_report") or "").strip()
+            source_report_path = str((research_artifacts.get("paths") or {}).get("final_report") or "")
+            manifest = research_artifacts.get("manifest") or {}
+            resolved_topic = self._clean_text(topic) or self._clean_text(manifest.get("question")) or "Research presentation"
+            return {
+                "resolved_topic": resolved_topic,
+                "gathered": material_gathered,
+                "materials": materials,
+                "research_report_text": report_text,
+                "research_session_id": research_session_id,
+                "source_report_path": source_report_path,
+            }
+
+        resolved_topic = self._clean_text(topic) or "Presentation"
+        meta = self._classify_topic(resolved_topic)
+        gathered = material_gathered + self._gather(resolved_topic, use_web_search=meta["use_web_search"])
+        return {
+            "resolved_topic": resolved_topic,
+            "gathered": gathered,
+            "materials": materials,
+            "research_report_text": "",
+            "research_session_id": None,
+            "source_report_path": "",
+        }
+
+    def draft_manuscript(self, plan: dict[str, Any], research_report_text: str = "") -> str:
+        """Return the manuscript: research report text if available, else draft from plan."""
+        if research_report_text:
+            return research_report_text
+        return self._draft(plan)
+
+    def finalize_bundle(
+        self,
+        session_id: str,
+        resolved_topic: str,
+        outline: dict[str, Any],
+        layout: dict[str, Any],
+        schema: dict[str, Any],
+        design: dict[str, Any],
+        plan: dict[str, Any],
+        manuscript: str,
+        research_session_id: str | None = None,
+        source_report_path: str = "",
+    ) -> dict[str, Any]:
+        """Persist all artifacts and export PPTX. Returns the artifacts dict."""
+        return self._finalize_presentation_bundle(
+            session_id=session_id,
+            resolved_topic=resolved_topic,
+            outline=outline,
+            layout=layout,
+            schema=schema,
+            design=design,
+            plan=plan,
+            manuscript=manuscript,
+            research_session_id=research_session_id,
+            source_report_path=source_report_path,
+        )
 
     def _outline_from_plan(self, topic: str, gathered: list[dict[str, Any]], target_pages: int | None = None) -> dict[str, Any]:
         return self.outline_service.build_outline(
@@ -580,6 +666,71 @@ class PresentationWorkflowService:
         self._write_history(self._build_artifact_paths(session_id)["history_path"], resolved_topic, result)
         return result
 
+    # ------------------------------------------------------------------
+    # YAML-workflow-driven execution (with checkpoint recovery)
+    # ------------------------------------------------------------------
+
+    def _build_workflow_engine(self) -> tuple[WorkflowEngine, WorkflowLoader]:
+        """Build a WorkflowEngine with all PPT services registered."""
+        engine = WorkflowEngine()
+        engine.service_registry.update({
+            "workflow": self,
+            "outline": self.outline_service,
+            "layout": self.layout_service,
+            "schema": self.schema_service,
+            "design": self.design_service,
+        })
+        loader = WorkflowLoader()
+        return engine, loader
+
+    async def run_topic_via_workflow(
+        self,
+        session_id: str,
+        topic: str | None,
+        target_pages: int | None = None,
+        research_session_id: str | None = None,
+        resume: bool = True,
+    ) -> dict[str, Any]:
+        """Run the presentation pipeline defined in presentation.yaml.
+
+        Uses CheckpointManager so a failure at any step can be resumed from
+        that step without re-running completed steps (e.g. PPTX export
+        failure → retry only the export step).
+        """
+        engine, loader = self._build_workflow_engine()
+        wf = loader.load("presentation")
+        store = CheckpointStore()
+        manager = CheckpointManager(engine=engine, store=store)
+
+        params = {
+            "session_id": session_id,
+            "topic": topic,
+            "target_pages": target_pages,
+            "research_session_id": research_session_id,
+        }
+
+        result = await manager.run(wf, session_id=session_id, params=params, resume=resume)
+
+        artifacts = result.get("artifacts") or {}
+        resolved_topic = str(result.get("resolved_topic") or topic or "Presentation")
+        plan = artifacts.get("plan") or result.get("plan") or {}
+        slides_count = len(plan.get("slides", [])) if isinstance(plan, dict) else 0
+
+        if research_session_id:
+            answer = (
+                "已基于研究报告生成演示初稿，"
+                f"共生成 {slides_count} 页大纲，"
+                "并输出了 plan、manuscript 和 pptx 文件。"
+            )
+        else:
+            answer = (
+                f"已完成主题“{resolved_topic}”的演示初稿生成，"
+                f"共生成 {slides_count} 页大纲，"
+                "并输出了 plan、manuscript 和 pptx 文件。"
+            )
+
+        return {"answer": answer, "artifacts": artifacts, **artifacts}
+
     def run_topic(
         self,
         session_id: str,
@@ -671,34 +822,50 @@ class PresentationWorkflowService:
 
     async def query_stream(self, request) -> AsyncGenerator[dict[str, Any], None]:
         logger.info("[presentation {}] start topic: {}", request.session_id, request.topic)
-        if getattr(request, "research_session_id", None):
-            yield {"type": "debug", "data": "bridge"}
-            yield {"type": "content", "data": "正在读取研究报告并抽取演示结构...\n"}
-            yield {"type": "debug", "data": "outline"}
-            yield {"type": "content", "data": "正在生成结构化大纲...\n"}
-            yield {"type": "debug", "data": "plan"}
-            yield {"type": "content", "data": "正在整理页面大纲为幻灯片计划...\n"}
-            yield {"type": "debug", "data": "draft"}
-            yield {"type": "content", "data": "正在输出 Markdown 讲稿并导出 PPT...\n"}
-            result = self.run_topic(
-                request.session_id,
-                getattr(request, "topic", None),
-                getattr(request, "target_pages", None),
-                research_session_id=getattr(request, "research_session_id", None),
-            )
-        else:
-            yield {"type": "debug", "data": "classify"}
-            yield {"type": "content", "data": "正在分析主题定位...\n"}
-            yield {"type": "debug", "data": "gather"}
-            yield {"type": "content", "data": "正在整理网页与素材信息...\n"}
-            yield {"type": "debug", "data": "outline"}
-            yield {"type": "content", "data": "正在生成结构化大纲...\n"}
-            yield {"type": "debug", "data": "plan"}
-            yield {"type": "content", "data": "正在生成页面级演示计划...\n"}
-            yield {"type": "debug", "data": "draft"}
-            yield {"type": "content", "data": "正在输出 Markdown 讲稿并导出 PPT...\n"}
-            result = self.run_topic(request.session_id, getattr(request, "topic", None), getattr(request, "target_pages", None))
-        yield {"type": "complete", "data": result}
+
+        step_messages = {
+            "prepare": "正在分析主题定位与素材...\n",
+            "outline": "正在生成结构化大纲...\n",
+            "layout": "正在选择页面布局...\n",
+            "schema": "正在构建页面结构...\n",
+            "design": "正在设计视觉样式...\n",
+            "apply_design": "正在应用设计方案...\n",
+            "plan": "正在生成页面级演示计划...\n",
+            "manuscript": "正在撰写讲稿...\n",
+            "finalize": "正在导出 PPT 文件...\n",
+        }
+
+        engine, loader = self._build_workflow_engine()
+        wf = loader.load("presentation")
+        store = CheckpointStore()
+        manager = CheckpointManager(engine=engine, store=store)
+        params = {
+            "session_id": request.session_id,
+            "topic": getattr(request, "topic", None),
+            "target_pages": getattr(request, "target_pages", None),
+            "research_session_id": getattr(request, "research_session_id", None),
+        }
+
+        result = {}
+        try:
+            async for ev in manager.run_stream(wf, session_id=request.session_id, params=params, resume=True):
+                etype = ev.get("type")
+                step = ev.get("step", "")
+                if etype == "step_start" and step in step_messages:
+                    yield {"type": "debug", "data": step}
+                    yield {"type": "content", "data": step_messages[step]}
+                elif etype == "step_error":
+                    yield {"type": "error", "data": ev.get("error", "工作流执行失败")}
+                    return
+                elif etype == "done":
+                    result = ev.get("output") or {}
+        except Exception as exc:
+            logger.error("[presentation {}] workflow failed: {}", request.session_id, exc)
+            yield {"type": "error", "data": str(exc)}
+            return
+
+        artifacts = result.get("artifacts") or {}
+        yield {"type": "complete", "data": {"answer": artifacts.get("answer", "PPT 生成完成"), "artifacts": artifacts, **artifacts}}
 
     def clear_session(self, session_id: str) -> bool:
         session_dir = self.storage_root / session_id

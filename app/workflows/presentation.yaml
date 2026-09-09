@@ -1,0 +1,105 @@
+name: "presentation"
+description: "PPT generation pipeline: classify → outline → layout → schema → design → plan → manuscript → export"
+
+config:
+  max_tool_rounds: 0
+
+parameters:
+  session_id: ""
+  topic: ""
+  target_pages: null
+  research_session_id: null
+
+workflow:
+  - call_service:
+      name: prepare
+      service: workflow
+      method: prepare_context
+      args:
+        session_id: "{{session_id}}"
+        topic: "{{topic}}"
+        target_pages: "{{target_pages}}"
+        research_session_id: "{{research_session_id}}"
+      save_as: prepare_result
+
+  - call_service:
+      name: outline
+      service: outline
+      method: build_outline
+      args:
+        topic: "{{prepare_result.resolved_topic}}"
+        gathered: "{{prepare_result.gathered}}"
+        target_pages: "{{target_pages}}"
+        user_materials: "{{prepare_result.materials}}"
+        research_report_text: "{{prepare_result.research_report_text}}"
+      save_as: outline
+
+  - call_service:
+      name: layout
+      service: layout
+      method: select_layouts
+      args:
+        outline: "{{outline}}"
+      save_as: layout
+
+  - call_service:
+      name: schema
+      service: schema
+      method: build_schema
+      args:
+        layout: "{{layout}}"
+      save_as: schema
+
+  - call_service:
+      name: design
+      service: design
+      method: build_design
+      args:
+        schema: "{{schema}}"
+      save_as: design
+
+  - call_service:
+      name: apply_design
+      service: design
+      method: apply_design
+      args:
+        schema: "{{schema}}"
+        design: "{{design}}"
+      save_as: designed_schema
+
+  - call_service:
+      name: plan
+      service: schema
+      method: schema_to_plan
+      args:
+        schema: "{{designed_schema}}"
+      save_as: plan
+
+  - call_service:
+      name: manuscript
+      service: workflow
+      method: draft_manuscript
+      args:
+        plan: "{{plan}}"
+        research_report_text: "{{prepare_result.research_report_text}}"
+      save_as: manuscript
+
+  - call_service:
+      name: finalize
+      service: workflow
+      method: finalize_bundle
+      args:
+        session_id: "{{session_id}}"
+        resolved_topic: "{{prepare_result.resolved_topic}}"
+        outline: "{{outline}}"
+        layout: "{{layout}}"
+        schema: "{{schema}}"
+        design: "{{design}}"
+        plan: "{{plan}}"
+        manuscript: "{{manuscript}}"
+        research_session_id: "{{prepare_result.research_session_id}}"
+        source_report_path: "{{prepare_result.source_report_path}}"
+      save_as: artifacts
+
+  - set_variable:
+      output: "{{artifacts}}"

@@ -44,7 +44,7 @@ class WorkflowContext:
                     return default
             else:
                 return default
-        return current if current is not None else default
+        return current
 
     def set(self, path: str, value: Any) -> None:
         """Set value at dot-separated path, creating intermediate dicts as needed."""
@@ -194,6 +194,7 @@ class WorkflowEngine:
         self.tool_wrapper: ToolWrapper = tool_wrapper or ToolWrapper(self.tool_registry)
         self.workflows: dict[str, WorkflowDef] = dict(workflows or {})
         self.workflow_loader = workflow_loader or WorkflowLoader()
+        self.service_registry: dict[str, Any] = {}
         self.trace_service: Any = None
         self.trace_run_id: str = ""
 
@@ -303,6 +304,8 @@ class WorkflowEngine:
             await self._handle_parallel(step, ctx, llm, max_tool_rounds, model_kwargs or {})
         elif step.type in ("call", "submodule"):
             await self._handle_call(step, ctx, llm, max_tool_rounds, model_kwargs or {})
+        elif step.type == "call_service":
+            self._handle_call_service(step, ctx)
         elif step.type == "goto":
             return step.target
         else:
@@ -521,6 +524,46 @@ class WorkflowEngine:
         else:
             for key, value in result.items():
                 ctx.set(key, value)
+
+    # ------------------------------------------------------------------
+    # call_service handler — direct Python service method invocation
+    # ------------------------------------------------------------------
+
+    def _handle_call_service(self, step: StepDef, ctx: WorkflowContext) -> None:
+        if not step.service or not step.method:
+            raise ValueError(f"call_service step '{step.name}' requires 'service' and 'method'")
+
+        service = self.service_registry.get(step.service)
+        if service is None:
+            raise KeyError(f"Service not registered: {step.service}")
+
+        func = getattr(service, step.method, None)
+        if func is None or not callable(func):
+            raise AttributeError(f"Service '{step.service}' has no callable method '{step.method}'")
+
+        resolved_args = {
+            str(key): self._resolve_arg(value, ctx)
+            for key, value in (step.args or {}).items()
+        }
+
+        result = func(**resolved_args)
+
+        if step.save_as:
+            ctx.set(step.save_as, result)
+
+    def _resolve_arg(self, value: Any, ctx: WorkflowContext) -> Any:
+        """Resolve a step argument. A bare {{var}} returns the raw context value
+        (preserving list/dict types); mixed templates are stringified."""
+        if isinstance(value, str):
+            full = re.fullmatch(r"\{\{\s*(.+?)\s*\}\}", value.strip())
+            if full:
+                return ctx.get(full.group(1))
+            return ctx.resolve(value)
+        if isinstance(value, dict):
+            return {str(k): self._resolve_arg(v, ctx) for k, v in value.items()}
+        if isinstance(value, list):
+            return [self._resolve_arg(v, ctx) for v in value]
+        return value
 
     # ------------------------------------------------------------------
     # tool filtering

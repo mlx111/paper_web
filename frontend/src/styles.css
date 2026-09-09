@@ -246,43 +246,45 @@ input {
   background: #f8fafc;
 }
 
-.workflow-launch-bar {
+.research-mode-bar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 16px;
   padding: 10px 18px;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.2);
-  background: #f5f8fc;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface-2);
 }
 
-.workflow-launch-bar strong {
-  display: block;
-  color: #20324a;
-  font-size: 13px;
+.research-mode-toggle {
+  display: flex;
+  gap: 0;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--color-surface);
 }
 
-.workflow-launch-bar span {
-  display: block;
-  margin-top: 2px;
-  color: #66758c;
-  font-size: 12px;
-}
-
-.workflow-launch-bar button {
+.research-mode-toggle .mode-btn {
   min-height: 34px;
-  flex: 0 0 auto;
-  padding: 0 13px;
-  border: 1px solid #24456f;
-  border-radius: 8px;
-  background: #17345f;
-  color: #ffffff;
-  cursor: pointer;
+  padding: 0 14px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--color-text-2);
   font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.research-mode-toggle .mode-btn.active {
+  background: var(--color-primary);
+  color: #ffffff;
   font-weight: 700;
 }
 
-.workflow-launch-bar button:disabled {
+.research-mode-toggle .mode-btn:disabled {
   cursor: not-allowed;
   opacity: 0.5;
 }

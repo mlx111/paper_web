@@ -11,6 +11,7 @@ from sse_starlette.sse import EventSourceResponse
 from loguru import logger
 
 from agents.research_workflow_service import research_workflow_service
+from agents.multi_agent_service import multi_agent_service
 from models.request import ChatRequest, ClearRequest, ConfirmCandidateRequest
 from models.response import SessionInfoResponse
 
@@ -18,12 +19,18 @@ from models.response import SessionInfoResponse
 router = APIRouter(prefix="/research", tags=["research"])
 
 
+def _resolve_research_service(mode: str | None):
+    """根据 mode 选择研究后端：workflow=固定工作流（默认），multi=多智能体编排。"""
+    return multi_agent_service if (mode or "workflow") == "multi" else research_workflow_service
+
+
 @router.post("/chat")
 async def chat(request: ChatRequest):
     """Non-streaming research entry point."""
     try:
         logger.info(f"[research {request.id}] received chat request: {request.question}")
-        answer = await research_workflow_service.query(
+        service = _resolve_research_service(request.mode)
+        answer = await service.query(
             request.question,
             session_id=request.id,
         )
@@ -54,10 +61,11 @@ async def chat(request: ChatRequest):
 async def chat_stream(request: ChatRequest):
     """Streaming research entry point."""
     logger.info(f"[research {request.id}] received streaming request: {request.question}")
+    service = _resolve_research_service(request.mode)
 
     async def event_generator():
         try:
-            async for chunk in research_workflow_service.query_stream(request.question, session_id=request.id):
+            async for chunk in service.query_stream(request.question, session_id=request.id):
                 chunk_type = chunk.get("type", "unknown")
                 chunk_data = chunk.get("data", None)
 

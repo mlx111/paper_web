@@ -205,22 +205,24 @@ export async function clearChatSession(sessionId) {
   }
 }
 
-export async function sendResearchChat({ sessionId, question }) {
+export async function sendResearchChat({ sessionId, question, mode }) {
   try {
     return await postJson('/research/chat', {
       id: sessionId,
-      question
+      question,
+      ...(mode ? { mode } : {})
     });
   } catch (error) {
     throw new Error(getErrorMessage(error, 'Research chat failed.'));
   }
 }
 
-export async function streamResearchChat({ sessionId, question, onEvent }) {
+export async function streamResearchChat({ sessionId, question, mode, onEvent }) {
   try {
     await postStream('/research/chat_stream', {
       id: sessionId,
-      question
+      question,
+      ...(mode ? { mode } : {})
     }, onEvent);
   } catch (error) {
     throw new Error(getErrorMessage(error, 'Research streaming failed.'));
