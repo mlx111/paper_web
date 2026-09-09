@@ -25,6 +25,7 @@ langchain-core
 langchain-community
 langchain-text-splitters
 langgraph
+langgraph-checkpoint-sqlite>=3.1.1
 langchain-qwq
 deepagents
 mcp

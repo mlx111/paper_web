@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import os
 import shutil
 import ssl
+import uuid
 from datetime import datetime, timezone
 import traceback
 import urllib.error
@@ -399,12 +401,113 @@ class ResearchWorkflowService:
         self.artifact_root = self.project_root / "data" / "research"
         self.artifact_root.mkdir(parents=True, exist_ok=True)
 
-        # 第 3 步：构建并编译研究工作流。
-        # 这张图只构建一次，后续所有请求复用同一套节点与边。
+        # 第 3 步：构建研究工作流图（只构建一次）。
+        # 编译延迟到首次异步调用时进行，因为 AsyncSqliteSaver 需要在
+        # async 上下文里初始化（from_conn_string 是 async context manager）。
         self.workflow = self._build_workflow()
-        self.app = self.workflow.compile()
+        self._app: Any = None
+        self._checkpointer: Any = None
+        self._saver_cm: Any = None
+        self._app_lock = asyncio.Lock()
 
         logger.info("Research workflow service initialized, streaming={}", streaming)
+
+    # ------------------------------------------------------------------
+    # LangGraph checkpointer（断点恢复）
+    # ------------------------------------------------------------------
+    async def _init_checkpointer(self) -> Any:
+        """创建并持有一个全局复用的 AsyncSqliteSaver。
+
+        - 研究流程走 ainvoke/astream 异步接口，必须用 AsyncSqliteSaver
+          （同步 SqliteSaver 的 aget_tuple/aset_tuple 会抛 NotImplementedError）。
+        - from_conn_string 返回 async context manager，这里进入后常驻
+          （生命周期与服务单例一致），不主动 __aexit__，保证连接复用。
+        - 若依赖缺失则降级为 None（无 checkpointer，行为同以前）。
+        """
+        if self._checkpointer is not None:
+            return self._checkpointer
+        try:
+            from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+        except Exception as exc:  # pragma: no cover - 依赖缺失时降级
+            logger.warning("[research] langgraph-checkpoint-sqlite 不可用（{}），本次运行不带断点恢复", exc)
+            return None
+
+        ckpt_dir = self.artifact_root / "checkpoints"
+        ckpt_dir.mkdir(parents=True, exist_ok=True)
+        db_path = str(ckpt_dir / "research_langgraph.sqlite")
+        try:
+            self._saver_cm = AsyncSqliteSaver.from_conn_string(db_path)
+            saver = await self._saver_cm.__aenter__()
+            try:
+                await saver.setup()
+            except Exception:
+                pass
+            self._checkpointer = saver
+            logger.info("[research] LangGraph checkpointer 已启用: {}", db_path)
+        except Exception as exc:  # pragma: no cover - 初始化失败降级
+            logger.warning("[research] checkpointer 初始化失败（{}），本次运行不带断点恢复", exc)
+            self._checkpointer = None
+        return self._checkpointer
+
+    async def _ensure_app(self) -> Any:
+        """首次调用时用 checkpointer 编译图，之后复用。"""
+        if self._app is None:
+            async with self._app_lock:
+                if self._app is None:
+                    checkpointer = await self._init_checkpointer()
+                    self._app = self.workflow.compile(checkpointer=checkpointer)
+        return self._app
+
+    def _run_state_path(self, session_id: str) -> Path:
+        return self._session_storage_dir(session_id) / "run_state.json"
+
+    def _load_run_state(self, session_id: str) -> dict[str, Any]:
+        return self._read_json(self._run_state_path(session_id), {}) or {}
+
+    def _save_run_state(self, session_id: str, state: dict[str, Any]) -> None:
+        self._write_json(self._run_state_path(session_id), state)
+
+    def _mark_run(self, session_id: str, status: str) -> None:
+        run_state = self._load_run_state(session_id)
+        if run_state.get("run_id"):
+            run_state["status"] = status
+            self._save_run_state(session_id, run_state)
+
+    async def _resolve_thread(self, session_id: str, question: str, confirmed: bool) -> tuple[str, bool]:
+        """决定本次运行使用的 thread_id，并判断是否为断点续跑。
+
+        续跑判断优先：只要存在状态为 running/failed 且问题完全相同的运行，
+        无论是否 confirmed（候选确认后的完整研究中途崩溃重发也走这里），
+        都复用其 thread_id 让 LangGraph 跳过已完成节点。
+        其余情况（新问题 / clarify 已完成待确认 / 上一轮已正常结束）开新线程。
+        """
+        trimmed = (question or "").strip()
+        run_state = self._load_run_state(session_id)
+
+        same_question = str(run_state.get("question") or "").strip() == trimmed
+        if same_question and run_state.get("status") in ("running", "failed") and run_state.get("run_id"):
+            logger.info("[research {}] 检测到未完成的运行，断点续跑: {}", session_id, run_state["run_id"])
+            return str(run_state["run_id"]), True
+
+        run_id = f"{session_id}:run:{uuid.uuid4().hex[:12]}"
+        self._save_run_state(session_id, {"run_id": run_id, "question": trimmed, "status": "running"})
+        return run_id, False
+
+    def _throwaway_thread(self, session_id: str, tag: str) -> dict[str, Any]:
+        return {"configurable": {"thread_id": f"{session_id}:{tag}:{uuid.uuid4().hex[:12]}"}}
+
+    async def _reset_loop_budget_on_resume(self, app: Any, config: dict[str, Any], session_id: str) -> None:
+        """断点续跑时把循环预算清零，让续跑后的 agent/judge 有全新轮次。
+
+        崩溃时 tool_rounds / num_feedback_requests 可能已接近上限，若原样还原，
+        续跑后很快触顶、LLM 还没写出最终报告就被强制结束。重试语义下给足预算，
+        已完成节点不会重跑（只是把计数器归零），报告更有机会补全。
+        """
+        try:
+            await app.aupdate_state(config, {"tool_rounds": 0, "num_feedback_requests": 0})
+            logger.info("[research {}] 断点续跑：已重置 agent/judge 循环预算", session_id)
+        except Exception as exc:  # 不阻断续跑
+            logger.warning("[research {}] 重置循环预算失败（不影响续跑）: {}", session_id, exc)
 
     def _history(self, session_id: str) -> HistoryService:
         # research 模块自己的历史存取入口。
@@ -1570,8 +1673,16 @@ class ResearchWorkflowService:
             # 非流式入口：
             # 一次性跑完整张图，最后直接返回最终答案。
             logger.info("[research {}] start query: {}", session_id, question)
+            app = await self._ensure_app()
             inputs = self._build_inputs(question, session_id)
-            result = await self.app.ainvoke(inputs)
+            confirmed = inputs.get("clarification_status") == "confirmed"
+            thread_id, is_resume = await self._resolve_thread(session_id, question, confirmed)
+            config = {"configurable": {"thread_id": thread_id}}
+            if is_resume:
+                await self._reset_loop_budget_on_resume(app, config, session_id)
+            # 断点续跑时不传新输入，让 LangGraph 从最后完成的节点继续；
+            # 新运行则传入完整 inputs。
+            result = await app.ainvoke(None if is_resume else inputs, config=config)
             messages = result.get("messages", []) if isinstance(result, dict) else []
             answer = self._extract_final_answer(messages)
             if isinstance(result, dict):
@@ -1589,8 +1700,10 @@ class ResearchWorkflowService:
                 )
             if answer:
                 self._save_turn(session_id, question, answer)
+            self._mark_run(session_id, "done")
             return answer
         except Exception as exc:
+            self._mark_run(session_id, "failed")
             logger.error("[research {}] query failed: {}", session_id, exc)
             logger.error("Exception traceback:\n{}", "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
             raise
@@ -1600,7 +1713,14 @@ class ResearchWorkflowService:
             # 流式入口：
             # 按节点把中间过程不断吐给前端，方便展示研究进度和工具调用过程。
             logger.info("[research {}] start stream query: {}", session_id, question)
+            app = await self._ensure_app()
             inputs = self._build_inputs(question, session_id)
+            confirmed = inputs.get("clarification_status") == "confirmed"
+            thread_id, is_resume = await self._resolve_thread(session_id, question, confirmed)
+            config = {"configurable": {"thread_id": thread_id}}
+            if is_resume:
+                await self._reset_loop_budget_on_resume(app, config, session_id)
+                yield {"type": "debug", "node": "resume", "data": "检测到上次未完成的研究，从断点继续……"}
 
             # Pre-determine expected stage sequence based on inputs
             node_to_stage = {
@@ -1623,10 +1743,10 @@ class ResearchWorkflowService:
             final_state_values: dict[str, Any] = {}
 
             # Emit first stage as running before the graph starts
-            if expected_stages:
+            if expected_stages and not is_resume:
                 yield {"type": "stage", "stage": expected_stages[0], "status": "running"}
 
-            async for chunk in self.app.astream(inputs, stream_mode="updates"):
+            async for chunk in app.astream(None if is_resume else inputs, config=config, stream_mode="updates"):
                 for node_name, updates in chunk.items():
                     if not isinstance(updates, dict):
                         continue
@@ -1693,11 +1813,25 @@ class ResearchWorkflowService:
 
                         yield {"type": "debug", "node": node_name, "message_type": message_type, "data": self._extract_text(message)}
 
+            # 从 checkpointer 拉取最终状态作为权威值。
+            # 断点续跑时 streamed_messages/final_state_values 只包含续跑后的节点，
+            # 前面节点的字段（branches/learnings/sources/refined_query 等）需要从
+            # checkpoint 的完整状态补齐，保证落盘 artifact 不丢内容。
+            try:
+                snapshot = await app.aget_state(config)
+                snapshot_values = dict(snapshot.values or {})
+                for key, value in snapshot_values.items():
+                    if final_state_values.get(key) in (None, [], "") and value not in (None, [], ""):
+                        final_state_values[key] = value
+            except Exception as snap_exc:
+                logger.warning("[research {}] 读取 checkpoint 最终状态失败（不影响主流程）: {}", session_id, snap_exc)
+
             # After graph completes, check if we need to pause for candidate selection
             clarification_status = str(final_state_values.get("clarification_status") or "none")
             research_candidates = list(final_state_values.get("research_candidates") or [])
 
             if clarification_status == "awaiting_selection" and research_candidates:
+                self._mark_run(session_id, "awaiting_selection")
                 self._save_clarification_state(session_id, {
                     "status": "awaiting_selection",
                     "question": question,
@@ -1723,6 +1857,10 @@ class ResearchWorkflowService:
 
             # Normal completion — persist artifacts and save history
             final_answer = self._extract_final_answer(streamed_messages)
+            if not final_answer:
+                # 续跑时最终报告可能不在本次流式片段里，回退到 checkpoint 消息
+                snap_messages = final_state_values.get("messages") or []
+                final_answer = self._extract_final_answer(snap_messages)
             if final_answer:
                 self._save_turn(session_id, question, final_answer)
 
@@ -1744,6 +1882,7 @@ class ResearchWorkflowService:
             if state_path.exists():
                 state_path.unlink(missing_ok=True)
 
+            self._mark_run(session_id, "done")
             yield {
                 "type": "complete",
                 "data": {
@@ -1757,6 +1896,7 @@ class ResearchWorkflowService:
                 },
             }
         except Exception as exc:
+            self._mark_run(session_id, "failed")
             logger.error("[research {}] stream failed: {}", session_id, exc)
             logger.error("Exception traceback:\n{}", "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
             yield {"type": "error", "data": str(exc)}
@@ -1765,6 +1905,7 @@ class ResearchWorkflowService:
         """Phase 1: Return research candidates without running full research."""
         try:
             logger.info("[research {}] get candidates: {}", session_id, question)
+            app = await self._ensure_app()
             inputs = self._build_inputs(question, session_id)
 
             pending = self._load_clarification_state(session_id)
@@ -1781,7 +1922,9 @@ class ResearchWorkflowService:
                 }
                 return
 
-            async for chunk in self.app.astream(inputs, stream_mode="updates"):
+            # 阶段一只跑到 clarify 取候选，用一次性 thread，不参与断点恢复。
+            cand_config = self._throwaway_thread(session_id, "cand")
+            async for chunk in app.astream(inputs, config=cand_config, stream_mode="updates"):
                 for node_name, updates in chunk.items():
                     if not isinstance(updates, dict):
                         continue
