@@ -47,7 +47,16 @@ class DeepAgentService(BaseAgentService):
 
     def default_tools(self) -> list:
         # 本地工具 + MCP Host 运行时动态发现的外部工具（来源标记为 mcp）
-        return [
+        from tools.harness.harness_tool import wrap_tools_with_harness, set_healing_model
+        from tools.registry_factory import HITL_TOOLS
+
+        # 初始化 healing LLM repair（用 agent 的 model）
+        try:
+            set_healing_model(self.model)
+        except Exception:
+            pass
+
+        raw_tools = [
             retrieve_knowledge,
             get_current_time,
             web_search,
@@ -59,6 +68,18 @@ class DeepAgentService(BaseAgentService):
             extract_document_text,
             *self._mcp_tools(),
         ]
+
+        # send_email 工具（需 HITL 审批）
+        try:
+            from tools.mail_tool import send_email
+            raw_tools.append(send_email)
+        except Exception:
+            pass
+
+        # 用 harness 包装所有工具（guardrail + HITL + healing）
+        return wrap_tools_with_harness(raw_tools, permissions={
+            name: "ask_user" for name in HITL_TOOLS
+        })
 
     def _mcp_tools(self) -> list:
         """外部 MCP server 工具（由 MCP Host 在应用启动时连接并动态注册）。

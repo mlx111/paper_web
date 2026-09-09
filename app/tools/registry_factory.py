@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import importlib
 from dataclasses import dataclass
@@ -105,6 +105,10 @@ TOOL_EXPORTS: dict[str, tuple[str, str]] = {
     name: (spec.module, spec.attr) for name, spec in TOOL_SPECS.items()
 }
 TOOL_EXPORTS["summary_message"] = ("tools.message_tool", "summary_message")
+TOOL_EXPORTS["send_email"] = ("tools.mail_tool", "send_email")
+
+# Tools that require human approval before execution
+HITL_TOOLS: set[str] = {"send_email"}
 
 
 def _load_tool_ref(spec: ToolSpec):

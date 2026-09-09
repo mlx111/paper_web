@@ -15,6 +15,7 @@ from routers.trace import router as trace_router
 from routers.workflow import router as workflow_router
 from routers.evaluation import router as evaluation_router
 from routers.mcp import router as mcp_router
+from routers.hitl import router as hitl_router
 from loguru import logger
 from settings.config import config
 from services.mlivus_client_service import mlivus_client_service
@@ -102,6 +103,7 @@ app.include_router(trace_router)
 app.include_router(workflow_router)
 app.include_router(evaluation_router)
 app.include_router(mcp_router)
+app.include_router(hitl_router)
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host=config.host, port=config.port, reload=config.debug)
