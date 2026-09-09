@@ -115,11 +115,18 @@ class MCPClientService:
             read, write = await self._exit_stack.enter_async_context(stdio_client(params))
 
         elif transport in ("http", "streamable-http", "streamable_http"):
-            from mcp.client.streamable_http import streamablehttp_client
+            # mcp 2.x 更名为 streamable_http_client 且上下文返回 (read, write)；
+            # mcp 1.x 为 streamablehttp_client 且返回 (read, write, get_session_id)。
+            try:
+                from mcp.client.streamable_http import streamable_http_client as _http_client
+            except ImportError:  # pragma: no cover - mcp<2 旧命名
+                from mcp.client.streamable_http import streamablehttp_client as _http_client
 
-            read, write, _ = await self._exit_stack.enter_async_context(
-                streamablehttp_client(spec["url"])
-            )
+            streams = await self._exit_stack.enter_async_context(_http_client(spec["url"]))
+            if len(streams) == 3:
+                read, write, _ = streams
+            else:
+                read, write = streams
         else:
             raise ValueError(f"不支持的 transport: {transport}")
 
@@ -155,7 +162,14 @@ class MCPClientService:
 
             def _make_coro(raw_name: str = mcp_tool.name, sess=session):
                 async def _coroutine(**kwargs):
-                    result = await sess.call_tool(raw_name, kwargs or None)
+                    try:
+                        # 长耗时 MCP 工具（如评测平台 wait_eval_run 阻塞等待）
+                        # 放宽读超时到 10 分钟，避免默认 30s 超时打断。
+                        result = await sess.call_tool(
+                            raw_name, kwargs or None, read_timeout_seconds=600
+                        )
+                    except TypeError:  # mcp<2 用 timeout 参数名
+                        result = await sess.call_tool(raw_name, kwargs or None, timeout=600)
                     return self._extract_text(result)
 
                 return _coroutine

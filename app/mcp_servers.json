@@ -9,6 +9,13 @@
       "description": "容器内置演示 MCP server（独立子进程）：calculator 安全数学计算、text_stats 文本统计。用于演示 MCP Host 的运行时发现与动态注册。"
     },
     {
+      "name": "llmops",
+      "transport": "http",
+      "enabled": true,
+      "url": "http://host.docker.internal:9000/mcp",
+      "description": "LLMOps 评测平台 MCP server：list_eval_datasets/start_eval_run/wait_eval_run/get_run_failures/compare_runs。Agent 可经 MCP 协议对本系统自助发起标准化评测、查分、看失败用例与版本回归对比（Agent-in-the-loop 自评闭环）。"
+    },
+    {
       "name": "example-remote",
       "transport": "http",
       "enabled": false,
