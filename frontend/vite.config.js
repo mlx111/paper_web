@@ -34,6 +34,10 @@ export default defineConfig({
       "/evaluation": {
         target: "http://127.0.0.1:8080",
         changeOrigin: true
+      },
+      "/llm-config": {
+        target: "http://127.0.0.1:8080",
+        changeOrigin: true
       }
     }
   }

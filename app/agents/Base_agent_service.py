@@ -46,7 +46,12 @@ class BaseAgentService(ABC):
     context_max_chars: int = 12000
 
     def __init__(self, streaming: bool = False, history_loader=None, model_name: str | None = None):
-        self.model_name = model_name or config.rag_model
+        # 普通 agent 传 None → 由工厂从 LLM 配置服务读取当前模型（支持页面切换）；
+        # 模型路由的 simple agent 显式传入（如 qwen-turbo）。
+        # _fixed_model_name 是构造时指定的固定模型（热重载后仍遵循）；
+        # model_name 记录当前实际生效模型，供日志 / Langfuse 展示。
+        self._fixed_model_name = model_name
+        self.model_name = model_name
         self.streaming = streaming
         self.prompt_dir = Path(__file__).resolve().parent.parent / "prompt"
         self.system_prompt_file = self.get_system_prompt_file()
@@ -54,7 +59,7 @@ class BaseAgentService(ABC):
 
         self.history_loader = history_loader or get_history
         self.store = InMemoryStore()
-        self.model = qwen_model.init_model(streaming, model=self.model_name)
+        self.model = qwen_model.init_model(streaming, model=self._fixed_model_name)
 
         self.context_config = self._build_context_config()
         self.context_builder = self._build_context_builder()
@@ -690,12 +695,23 @@ class BaseAgentService(ABC):
             return
 
         try:
+            # 每次（重新）构建都从工厂获取最新模型，使页面修改 LLM 配置后热生效
+            self.model = qwen_model.init_model(self.streaming, model=self._fixed_model_name)
+            # 回写实际生效模型名（普通 agent 由配置决定），供日志 / Langfuse metadata 使用
+            actual_model = getattr(self.model, "model_name", None)
+            if actual_model:
+                self.model_name = actual_model
             self.agent = self.build_agent()
             self._agent_initialized = True
-            logger.info("{} 创建完成", self.__class__.__name__)
+            logger.info("{} 创建完成，当前模型: {}", self.__class__.__name__, self.model_name)
         except Exception as exc:
             logger.error("{} 创建失败: {}", self.__class__.__name__, exc)
             raise
+
+    def reset_agent(self) -> None:
+        """重置已初始化状态；下次请求时用最新 LLM 配置重建 agent（热生效）。"""
+        self.agent = None
+        self._agent_initialized = False
 
 
     async def query(self, question: str, session_id: str) -> str:

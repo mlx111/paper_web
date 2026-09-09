@@ -2,8 +2,40 @@
   color-scheme: light;
   font-family: "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
   line-height: 1.5;
-  color: #202124;
-  background: #fbfbfd;
+  color: #0f172a;
+  background: #f8fafc;
+
+  /* ===== 设计 token ===== */
+  --color-primary: #2f6ef2;
+  --color-primary-hover: #1d55d8;
+  --color-primary-soft: #edf3ff;
+  --color-bg: #f8fafc;
+  --color-surface: #ffffff;
+  --color-surface-2: #f1f5f9;
+  --color-border: #e2e8f0;
+  --color-border-strong: #cbd5e1;
+  --color-text: #0f172a;
+  --color-text-2: #475569;
+  --color-text-3: #94a3b8;
+  --color-success: #16a34a;
+  --color-warning: #d97706;
+  --color-error: #dc2626;
+
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-pill: 999px;
+
+  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.06);
+  --shadow-md: 0 4px 12px rgba(15, 23, 42, 0.08);
+  --shadow-lg: 0 12px 32px rgba(15, 23, 42, 0.12);
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
 }
 
 * {
@@ -21,7 +53,7 @@ body,
 
 body {
   height: 100vh;
-  background: #fbfbfd;
+  background: var(--color-bg);
 }
 
 button,
@@ -41,7 +73,7 @@ input {
   height: 100vh;
   flex: 0 0 288px;
   background: #eaf2ff;
-  border-right: 1px solid #d5dff3;
+  border-right: 1px solid var(--color-border);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -49,7 +81,7 @@ input {
 
 .sidebar-header {
   padding: 20px 24px;
-  border-bottom: 1px solid #d5dff3;
+  border-bottom: 1px solid var(--color-border);
 }
 
 .sidebar-title {
@@ -95,7 +127,7 @@ input {
 }
 
 .module-switcher-item.active {
-  border-color: #5d81f4;
+  border-color: var(--color-primary);
   background: linear-gradient(135deg, rgba(95, 111, 255, 0.18), rgba(47, 110, 242, 0.08));
   box-shadow: 0 10px 24px rgba(47, 110, 242, 0.12);
 }
@@ -204,7 +236,7 @@ input {
   flex-direction: column;
   min-width: 0;
   min-height: 0;
-  background: #ffffff;
+  background: var(--color-surface);
   overflow: hidden;
 }
 
@@ -300,7 +332,7 @@ input {
 
 .welcome-greeting {
   text-align: center;
-  color: #2f6ef2;
+  color: var(--color-primary);
   font-size: 24px;
   margin: auto;
   padding-bottom: 80px;
@@ -325,7 +357,7 @@ input {
 }
 
 .message.user .message-content {
-  background: #edf3ff;
+  background: var(--color-primary-soft);
   color: #21314f;
 }
 
@@ -333,7 +365,7 @@ input {
   width: 36px;
   height: 36px;
   border-radius: 50%;
-  background: #2f6ef2;
+  background: var(--color-primary);
   color: white;
   display: grid;
   place-items: center;
@@ -472,7 +504,7 @@ input {
   align-items: center;
   padding: 4px 10px;
   border-radius: 999px;
-  background: #edf3ff;
+  background: var(--color-primary-soft);
   color: #2d5bd8;
   font-size: 12px;
   font-weight: 600;
@@ -631,7 +663,7 @@ input {
 
 .stream-mode-btn.active {
   background: #ffffff;
-  color: #2f6ef2;
+  color: var(--color-primary);
   box-shadow: 0 1px 4px rgba(37, 60, 94, 0.12);
 }
 
@@ -693,7 +725,7 @@ input {
   margin: 0 auto 14px;
   border-radius: 50%;
   border: 3px solid #d9e5ff;
-  border-top-color: #2f6ef2;
+  border-top-color: var(--color-primary);
   animation: spin 0.9s linear infinite;
 }
 
@@ -728,7 +760,7 @@ input {
 }
 
 .toast.info {
-  background: #2f6ef2;
+  background: var(--color-primary);
 }
 
 .toast.success {
@@ -776,4 +808,84 @@ input {
     font-size: 22px;
     padding: 0 16px;
   }
+}
+
+/* ===== 通用工具类（全站复用） ===== */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 36px;
+  padding: 0 16px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+.btn:hover {
+  background: var(--color-surface-2);
+  border-color: var(--color-border-strong);
+}
+.btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.btn-primary {
+  border-color: var(--color-primary);
+  background: var(--color-primary);
+  color: #fff;
+}
+.btn-primary:hover {
+  background: var(--color-primary-hover);
+  border-color: var(--color-primary-hover);
+}
+.btn-ghost {
+  border-color: transparent;
+  background: transparent;
+  color: var(--color-text-2);
+}
+.btn-ghost:hover {
+  background: var(--color-surface-2);
+}
+
+.card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+}
+
+.input,
+.select {
+  height: 38px;
+  padding: 0 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: 14px;
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.input:focus,
+.select:focus {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px rgba(47, 110, 242, 0.15);
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  border-radius: var(--radius-pill);
+  background: var(--color-primary-soft);
+  color: var(--color-primary);
+  font-size: 12px;
+  font-weight: 600;
 }

@@ -17,6 +17,8 @@
         @open-trace="handleOpenTrace"
       />
 
+      <ModelSettings v-else-if="activeModule === 'settings'" />
+
       <template v-else>
       <details v-if="activeModule === 'presentation'" class="presentation-materials-accordion">
         <summary class="presentation-materials-summary">
@@ -107,6 +109,7 @@ import ChatInput from './components/ChatInput.vue';
 import ChatWindow from './components/ChatWindow.vue';
 import EvaluationDashboard from './components/EvaluationDashboard.vue';
 import LoadingOverlay from './components/LoadingOverlay.vue';
+import ModelSettings from './components/ModelSettings.vue';
 import NotificationToast from './components/NotificationToast.vue';
 import PresentationMaterialsPanel from './components/PresentationMaterialsPanel.vue';
 import Sidebar from './components/Sidebar.vue';
@@ -218,6 +221,20 @@ const MODULES = [
     label: '评测面板',
     description: 'Benchmark、Trace 与失败归因',
     hint: 'AgentOps',
+    placeholder: '',
+    allowUpload: false,
+    utility: true,
+    loadHistory: async () => [],
+    clearSession: async () => ({}),
+    sendSingle: async () => ({}),
+    sendStream: async () => {},
+    defaultStreaming: false,
+  },
+  {
+    key: 'settings',
+    label: '模型设置',
+    description: '供应商 / 模型名 / API Key',
+    hint: 'LLM Config',
     placeholder: '',
     allowUpload: false,
     utility: true,

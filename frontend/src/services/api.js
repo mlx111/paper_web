@@ -527,3 +527,80 @@ export async function clearWorkflowCheckpoints(sessionId) {
     throw new Error(getErrorMessage(error, 'Failed to clear workflow checkpoints.'));
   }
 }
+
+// ---------- 大模型配置（供应商 / 模型名 / API Key / 接口地址） ----------
+
+export async function getLlmConfig() {
+  try {
+    return await getJson('/llm-config');
+  } catch (error) {
+    throw new Error(getErrorMessage(error, '获取模型配置失败。'));
+  }
+}
+
+async function putJson(path, body) {
+  const response = await fetch(buildUrl(path), {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err?.detail || err?.message || `HTTP error: ${response.status}`);
+  }
+  return response.json();
+}
+
+export async function saveLlmConfig({ provider, model, baseUrl, apiKey }) {
+  try {
+    return await putJson('/llm-config', {
+      provider,
+      model,
+      base_url: baseUrl,
+      api_key: apiKey
+    });
+  } catch (error) {
+    throw new Error(getErrorMessage(error, '保存模型配置失败。'));
+  }
+}
+
+export async function testLlmConfig({ provider, model, baseUrl, apiKey }) {
+  try {
+    const response = await fetch(buildUrl('/llm-config/test'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        provider,
+        model,
+        base_url: baseUrl,
+        api_key: apiKey
+      })
+    });
+    if (!response.ok) {
+      throw new Error(`HTTP error: ${response.status}`);
+    }
+    return response.json();
+  } catch (error) {
+    return { ok: false, message: getErrorMessage(error, '测试连接失败。') };
+  }
+}
+
+export async function fetchLlmModels({ provider, baseUrl, apiKey }) {
+  try {
+    const response = await fetch(buildUrl('/llm-config/models'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        provider,
+        base_url: baseUrl,
+        api_key: apiKey
+      })
+    });
+    if (!response.ok) {
+      throw new Error(`HTTP error: ${response.status}`);
+    }
+    return response.json();
+  } catch (error) {
+    return { ok: false, models: [], message: getErrorMessage(error, '获取模型列表失败。') };
+  }
+}

@@ -224,8 +224,8 @@ onMounted(loadReports);
   min-height: 100%;
   overflow-y: auto;
   padding: 28px;
-  background: #0f1720;
-  color: #dce7f3;
+  background: var(--color-bg);
+  color: var(--color-text);
 }
 
 .evaluation-dashboard-header {
@@ -234,27 +234,27 @@ onMounted(loadReports);
   justify-content: space-between;
   gap: 24px;
   padding-bottom: 20px;
-  border-bottom: 1px solid #253345;
+  border-bottom: 1px solid var(--color-border);
 }
 
 .evaluation-kicker {
-  color: #7dd3fc;
+  color: var(--color-primary);
   font-size: 12px;
-  font-weight: 800;
+  font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 
 .evaluation-dashboard h2 {
   margin: 6px 0 8px;
-  color: #f8fafc;
+  color: var(--color-text);
   font-size: 28px;
   line-height: 1.2;
 }
 
 .evaluation-dashboard p {
   margin: 0;
-  color: #9fb0c5;
+  color: var(--color-text-2);
   font-size: 14px;
 }
 
@@ -262,24 +262,35 @@ onMounted(loadReports);
 .evaluation-report-meta {
   display: flex;
   gap: 10px;
+  flex-wrap: nowrap;
 }
 
 .evaluation-actions button,
 .trace-link-button {
   height: 36px;
-  padding: 0 13px;
-  border: 1px solid #36506b;
-  border-radius: 8px;
-  background: #142235;
-  color: #dbeafe;
+  padding: 0 16px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text);
   cursor: pointer;
-  font-weight: 800;
+  font-weight: 600;
+  white-space: nowrap;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.evaluation-actions button:hover:not(:disabled),
+.trace-link-button:hover:not(:disabled) {
+  background: var(--color-surface-2);
 }
 
 .evaluation-actions button.primary {
-  border-color: #0ea5e9;
-  background: #075985;
-  color: #f0f9ff;
+  border-color: var(--color-primary);
+  background: var(--color-primary);
+  color: #fff;
+}
+.evaluation-actions button.primary:hover:not(:disabled) {
+  background: var(--color-primary-hover);
+  border-color: var(--color-primary-hover);
 }
 
 .evaluation-actions button:disabled,
@@ -292,21 +303,22 @@ onMounted(loadReports);
 .evaluation-report-bar,
 .evaluation-summary-card,
 .evaluation-section {
-  border: 1px solid #26384f;
-  border-radius: 8px;
-  background: #111d2d;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-sm);
 }
 
 .evaluation-state {
   margin-top: 18px;
   padding: 16px;
-  color: #b5c6dc;
+  color: var(--color-text-2);
 }
 
 .evaluation-state.error {
-  border-color: #7f2d2d;
-  background: #2a1518;
-  color: #fecaca;
+  border-color: #fecaca;
+  background: #fef2f2;
+  color: var(--color-error);
 }
 
 .evaluation-report-bar {
@@ -325,18 +337,24 @@ onMounted(loadReports);
 
 .evaluation-report-bar span,
 .evaluation-summary-card span {
-  color: #8395ad;
+  color: var(--color-text-3);
   font-size: 12px;
-  font-weight: 800;
+  font-weight: 600;
 }
 
 .evaluation-report-bar select {
   min-width: min(420px, 72vw);
-  height: 36px;
-  border: 1px solid #36506b;
-  border-radius: 8px;
-  background: #0a1320;
-  color: #f8fafc;
+  height: 38px;
+  padding: 0 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text);
+  outline: none;
+}
+.evaluation-report-bar select:focus {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px rgba(47, 110, 242, 0.15);
 }
 
 .evaluation-summary-grid {
@@ -354,12 +372,13 @@ onMounted(loadReports);
 .evaluation-summary-card span {
   font-size: 11px;
   text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 
 .evaluation-summary-card strong {
   display: block;
   margin-top: 10px;
-  color: #f8fafc;
+  color: var(--color-text);
   font-size: 22px;
 }
 
@@ -378,13 +397,13 @@ onMounted(loadReports);
 
 .evaluation-section-head h3 {
   margin: 0;
-  color: #f8fafc;
+  color: var(--color-text);
   font-size: 17px;
 }
 
 .evaluation-section-head span,
 .evaluation-empty {
-  color: #8ca0b8;
+  color: var(--color-text-3);
   font-size: 13px;
 }
 
@@ -400,13 +419,13 @@ onMounted(loadReports);
   gap: 10px;
   min-height: 38px;
   padding: 0 12px;
-  border: 1px solid #334966;
-  border-radius: 8px;
-  background: #0a1320;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-2);
 }
 
 .failure-category-item strong {
-  color: #fca5a5;
+  color: var(--color-error);
 }
 
 .evaluation-table-wrap {
@@ -422,25 +441,39 @@ onMounted(loadReports);
 .evaluation-table th,
 .evaluation-table td {
   padding: 11px 10px;
-  border-bottom: 1px solid #26384f;
+  border-bottom: 1px solid var(--color-border);
   text-align: left;
   vertical-align: top;
   font-size: 13px;
+  color: var(--color-text);
 }
 
 .evaluation-table th {
-  color: #8ca0b8;
+  color: var(--color-text-3);
   font-size: 11px;
   text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background: var(--color-surface-2);
 }
 
 .evaluation-table code {
-  color: #bae6fd;
+  color: var(--color-primary);
+  background: var(--color-primary-soft);
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 12px;
 }
 
 .trace-link-button {
   height: 30px;
+  padding: 0 12px;
   font-size: 12px;
+  border-color: var(--color-primary);
+  background: var(--color-surface);
+  color: var(--color-primary);
+}
+.trace-link-button:hover:not(:disabled) {
+  background: var(--color-primary-soft);
 }
 
 @media (max-width: 980px) {
@@ -452,6 +485,10 @@ onMounted(loadReports);
   .evaluation-report-bar {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .evaluation-actions {
+    flex-wrap: wrap;
   }
 
   .evaluation-summary-grid {
