@@ -4,7 +4,7 @@
 - 配置持久化到 app/data/llm_config.json（docker volume 挂载，重启不丢、不进镜像/不提交 git）。
 - API Key 用 Fernet 对称加密后落盘；密钥保存在 app/data/.llm_secret（首次自动生成），
   GET 接口只回「是否已配置 + 掩码」，绝不返回明文；PUT 时 api_key 留空表示不修改。
-- 供应商表驱动：ChatQwen 继承 BaseChatOpenAI，所有 OpenAI 兼容服务
+- 供应商表驱动：统一使用 OpenAI 兼容 Chat Completions 客户端，所有 OpenAI 兼容服务
   （DashScope / DeepSeek / Kimi / OpenAI / 智谱 / 本地 Ollama 等）改 base_url+key+model 即可。
 - 首次启动若配置文件不存在，用环境变量（.env）里的 DashScope 配置初始化默认值。
 """
@@ -324,16 +324,22 @@ class LLMConfigService:
 
         start = time.time()
         try:
-            from langchain_qwq import ChatQwen
+            from models.factory import UniversalChatOpenAI
+            from core.http_client_factory import create_llm_async_http_client, create_llm_http_client
             from pydantic import SecretStr
 
-            llm = ChatQwen(
+            llm = UniversalChatOpenAI(
                 model=params["model"],
                 base_url=params["base_url"],
                 api_key=SecretStr(params["api_key"] or "not-required"),
                 temperature=0,
                 streaming=False,
+                provider=params["provider"],
+                preserve_reasoning_content=params["provider"] in {"deepseek", "dashscope", "moonshot", "zhipu", "custom"},
                 max_tokens=8,
+                use_responses_api=False,
+                http_client=create_llm_http_client(),
+                http_async_client=create_llm_async_http_client(),
             )
             resp = llm.invoke("ping")
             latency_ms = int((time.time() - start) * 1000)

@@ -14,7 +14,10 @@ from sse_starlette.sse import EventSourceResponse
 from agents.file_agent_service import file_agent_service
 from models.request import ChatRequest, ClearRequest
 from models.response import ApiResponse, SessionInfoResponse
-from services.chunk_image_store_service import default_chunk_image_store
+from services.chunk_image_store_service import (
+    default_chunk_image_store,
+    extract_image_placeholders,
+)
 from services.temp_file_service import temp_file_service
 from services.vector_index_service import vector_index_service
 from utils.rag_utils import rag_utils_service
@@ -54,32 +57,63 @@ def _format_source_doc(doc) -> dict:
     except (TypeError, ValueError):
         score = None
 
+    # 多模态 RAG：命中图片块时，把对应图片 URL 一并带给前端
+    placeholders = metadata.get("image_placeholders") or []
+    if not placeholders:
+        # Milvus 不一定把 metadata 字段都写回，兜底从 text 里提取占位符
+        placeholders = extract_image_placeholders(preview)
+    image_urls: list[str] = []
+    if placeholders:
+        image_map = default_chunk_image_store.resolve_image_map(placeholders)
+        image_urls = [url for _, url in image_map.items()]
+    # 路线三兜底：image collection 融合时 metadata 已带 image_urls，直接用
+    if not image_urls:
+        meta_urls = metadata.get("image_urls") or []
+        if isinstance(meta_urls, list):
+            image_urls = [u for u in meta_urls if u]
+
     return {
         "filename": metadata.get("filename") or metadata.get("_file_name") or "未知文件",
         "page_number": metadata.get("page_number"),
         "chunk_id": metadata.get("chunk_id") or "",
         "score": score,
         "preview": preview,
+        "chunk_type": metadata.get("chunk_type") or ("image" if image_urls else "text"),
+        "image_urls": image_urls,
     }
 
 
-def _build_file_sources(question: str, top_k: int = 3) -> list[dict]:
+def _build_file_sources(question: str, top_k: int = 3) -> tuple[list[dict], dict[str, str]]:
+    """检索并构造前端 source 列表，同时收集所有命中块的图片 URL 映射。
+
+    返回 (sources, image_map)。image_map 把 placeholder 映射到图片 URL，
+    供前端展示；与从答案正文解析的 image_map 合并后统一返回。
+    """
     try:
         retrieved = rag_utils_service.retrieve_documents(question, top_k=top_k)
         docs = retrieved.get("docs", []) if isinstance(retrieved, dict) else []
-        sources: list[dict] = []
-        seen: set[str] = set()
-        for doc in docs:
-            source = _format_source_doc(doc)
-            key = source.get("chunk_id") or f"{source.get('filename')}:{source.get('page_number')}:{source.get('preview')}"
-            if key in seen:
-                continue
-            seen.add(key)
-            sources.append(source)
-        return sources
     except Exception as exc:
         logger.warning("文件问答 sources 构建失败: {}", exc)
-        return []
+        return [], {}
+
+    sources: list[dict] = []
+    image_map: dict[str, str] = {}
+    seen: set[str] = set()
+    for doc in docs:
+        source = _format_source_doc(doc)
+        key = source.get("chunk_id") or f"{source.get('filename')}:{source.get('page_number')}:{source.get('preview')}"
+        if key in seen:
+            continue
+        seen.add(key)
+        sources.append(source)
+        # 合并该 chunk 携带的图片占位符 → URL
+        metadata = getattr(doc, "metadata", {}) or {}
+        placeholders = metadata.get("image_placeholders") or extract_image_placeholders(
+            getattr(doc, "page_content", "") or ""
+        )
+        if placeholders:
+            image_map.update(default_chunk_image_store.resolve_image_map(placeholders))
+    return sources, image_map
 
 
 @router.post("/upload")
@@ -224,7 +258,9 @@ async def chat(request: ChatRequest):
         agent_question = _with_temp_file_context(request.question, request.id)
         answer = await file_agent_service.query(agent_question, session_id=request.id)
         image_map = default_chunk_image_store.resolve_image_map_from_text(answer)
-        sources = _build_file_sources(request.question)
+        sources, sources_image_map = _build_file_sources(request.question)
+        # 合并检索侧收集到的图片 URL（即使 LLM 没把占位符带进答案也能展示）
+        image_map.update(sources_image_map)
         return {
             "code": 200,
             "message": "success",
@@ -326,7 +362,9 @@ async def chat_stream(request: ChatRequest):
                 elif chunk_type == "complete":
                     answer = "".join(answer_parts).strip()
                     image_map = default_chunk_image_store.resolve_image_map_from_text(answer)
-                    sources = _build_file_sources(request.question)
+                    sources, sources_image_map = _build_file_sources(request.question)
+                    # 合并检索侧收集到的图片 URL，前端可基于占位符或 URL 直接展示
+                    image_map.update(sources_image_map)
                     yield {
                         "event": "message",
                         "data": json.dumps(

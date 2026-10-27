@@ -13,7 +13,7 @@ pydantic[email]
 pwdlib[argon2]
 
 # Database, cache, and mail
-sqlalchemy
+sqlalchemy[asyncio]<2.1
 aiomysql
 alembic
 redis
@@ -21,12 +21,12 @@ fastapi-mail
 
 # LLM, agents, and workflow orchestration
 langchain
+langchain-openai
 langchain-core
 langchain-community
 langchain-text-splitters
 langgraph
 langgraph-checkpoint-sqlite>=3.1.1
-langchain-qwq
 deepagents
 mcp
 

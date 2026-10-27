@@ -92,6 +92,32 @@ class ChunkImageStore:
     def resolve_image_map_from_text(self, text: str) -> dict[str, str]:
         return self.resolve_image_map(extract_image_placeholders(text))
 
+    def update_caption(self, placeholder: str, caption: str) -> bool:
+        """把视觉模型生成的 caption 回写到映射里，便于检索侧附带展示。"""
+        if not placeholder or not caption:
+            return False
+        mapping = self._load_mapping()
+        record = mapping.get(placeholder)
+        if not record:
+            return False
+        record["caption"] = caption
+        mapping[placeholder] = record
+        self._save_mapping(mapping)
+        return True
+
+    def get_caption(self, placeholder: str) -> str:
+        """读取已生成的 caption（不存在时返回空串）。"""
+        mapping = self._load_mapping()
+        record = mapping.get(placeholder)
+        if not record:
+            return ""
+        return str(record.get("caption") or "")
+
+    def get_image_record(self, placeholder: str) -> dict[str, Any] | None:
+        """按占位符返回完整记录（供检索侧拿 caption/page_number 等）。"""
+        mapping = self._load_mapping()
+        return mapping.get(placeholder)
+
     def get_image_path(self, image_id: str) -> Path | None:
         mapping = self._load_mapping()
         for record in mapping.values():

@@ -340,6 +340,130 @@ class MilvusManager:
             logger.error("Milvus 删除失败: {}", exc)
             raise
 
+    # ============ 路线三：图像向量独立 collection ============
+    # 与主 collection 的 caption 块通过 chunk_id 关联，双轨互为兜底
+
+    def init_image_collection(self, dense_dim: int = None):
+        """建/检查图像向量 collection（mypaperweb_image_embeddings）。
+
+        schema 字段：image_dense_embedding / chunk_id / image_placeholder / image_url /
+        caption / source_file / page_number / file_id。enable_dynamic_field=True。
+        """
+        try:
+            client = self._get_client()
+            dense_dim = dense_dim or config.MULTIMODAL_EMBEDDING_DIM
+            col_name = config.MILVUS_IMAGE_COLLECTION
+            if not client.has_collection(col_name):
+                schema = client.create_schema(auto_id=True, enable_dynamic_field=True)
+                schema.add_field("id", DataType.INT64, is_primary=True, auto_id=True)
+                schema.add_field(
+                    "image_dense_embedding", DataType.FLOAT_VECTOR, dim=dense_dim
+                )
+                schema.add_field("chunk_id", DataType.VARCHAR, max_length=512)
+                schema.add_field("image_placeholder", DataType.VARCHAR, max_length=64)
+                schema.add_field("image_url", DataType.VARCHAR, max_length=255)
+                schema.add_field("caption", DataType.VARCHAR, max_length=2048)
+                schema.add_field("source_file", DataType.VARCHAR, max_length=1024)
+                schema.add_field("page_number", DataType.INT64)
+                schema.add_field("file_id", DataType.VARCHAR, max_length=255)
+
+                index_params = client.prepare_index_params()
+                index_params.add_index(
+                    field_name="image_dense_embedding",
+                    index_type="HNSW",
+                    metric_type="IP",
+                    params={"M": 16, "efConstruction": 256},
+                )
+                client.create_collection(
+                    collection_name=col_name,
+                    schema=schema,
+                    index_params=index_params,
+                )
+                logger.info("Milvus 图像集合创建完成: {}（dim={}）", col_name, dense_dim)
+            else:
+                logger.info("Milvus 图像集合已存在: {}", col_name)
+        except Exception as exc:
+            logger.error("初始化 Milvus 图像集合失败: {}", exc)
+            raise
+
+    def insert_image(self, data: list[dict]):
+        """写入图像向量记录到 image collection。"""
+        try:
+            client = self._get_client()
+            client.insert(config.MILVUS_IMAGE_COLLECTION, data)
+            logger.info("Milvus 图像向量写入完成，记录数: {}", len(data))
+        except Exception as exc:
+            logger.error("Milvus 图像向量写入失败: {}", exc)
+            raise
+
+    def dense_retrieve_image(
+        self,
+        dense_embedding: list[float],
+        top_k: int = 5,
+        filter_expr: str = "",
+    ) -> list[dict]:
+        """图像向量检索，返回原始 record（含 chunk_id/caption/image_url/score）。
+
+        返回 list[dict]（非 Document），供 rag_utils 应用层融合处理。
+        """
+        try:
+            client = self._get_client()
+            results = client.search(
+                collection_name=config.MILVUS_IMAGE_COLLECTION,
+                data=[dense_embedding],
+                anns_field="image_dense_embedding",
+                search_params={"metric_type": "IP", "params": {"ef": 64}},
+                limit=top_k,
+                output_fields=[
+                    "chunk_id",
+                    "image_placeholder",
+                    "image_url",
+                    "caption",
+                    "source_file",
+                    "page_number",
+                    "file_id",
+                ],
+                filter=filter_expr,
+            )
+            formatted: list[dict] = []
+            for hits in results:
+                for hit in hits:
+                    entity = hit.get("entity", {}) or {}
+                    formatted.append(
+                        {
+                            "chunk_id": entity.get("chunk_id", ""),
+                            "image_placeholder": entity.get("image_placeholder", ""),
+                            "image_url": entity.get("image_url", ""),
+                            "caption": entity.get("caption", ""),
+                            "source_file": entity.get("source_file", ""),
+                            "page_number": entity.get("page_number", 0),
+                            "file_id": entity.get("file_id", ""),
+                            "score": hit.get("distance", 0.0),
+                            "id": hit.get("id"),
+                        }
+                    )
+            logger.info("Milvus 图像向量检索完成，返回 {} 条记录", len(formatted))
+            return formatted
+        except Exception as exc:
+            logger.error("Milvus 图像向量检索失败: {}", exc)
+            raise
+
+    def delete_image_by_source(self, source_path: str):
+        """按 source_file 删 image collection 旧记录（重建索引前清理）。"""
+        try:
+            client = self._get_client()
+            escaped = source_path.replace('"', '\\"')
+            filter_expr = f'source_file == "{escaped}"'
+            result = client.delete(
+                collection_name=config.MILVUS_IMAGE_COLLECTION,
+                filter=filter_expr,
+            )
+            logger.info("Milvus 图像向量删除完成，source_file: {}", source_path)
+            return result
+        except Exception as exc:
+            logger.error("Milvus 图像向量删除失败: {}", exc)
+            raise
+
     def has_collection(self) -> bool:
         try:
             client = self._get_client()

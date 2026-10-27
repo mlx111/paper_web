@@ -1,4 +1,4 @@
-﻿from collections import defaultdict
+from collections import defaultdict
 from textwrap import dedent
 from typing import Any, Dict, List, Tuple
 import json
@@ -12,7 +12,9 @@ from loguru import logger
 
 from context.context_config import ContextConfig
 from services.embodeding_service import Embodedings
+from services.es_retrieval_service import ESRetrievalService, es_retrieval_service
 from services.mlivus_client_service import MilvusManager
+from services.multimodal_embedding_service import multimodal_embedding_service
 from services.parent_chunk_service import ParentChunkStore
 from context.builder import ContextBuilder
 from utils.history import get_history
@@ -384,6 +386,111 @@ class RagUtilsService:
             "expanded_query": expanded_query,
         }
 
+    def _merge_image_hits(
+        self, docs: List[Document], image_hits: list[dict]
+    ) -> List[Document]:
+        """应用层融合：把 image collection 检索结果合并到主 collection 检索结果。
+
+        - 按 chunk_id 匹配主 collection 的 caption 块：命中则把 image_url/image_score 补到 metadata
+        - 未命中：用 caption 构造新 Document 加入列表（兜底，caption 块可能未写入主 collection）
+        """
+        if not image_hits:
+            return docs
+
+        docs_by_chunk_id: Dict[str, Document] = {}
+        for doc in docs:
+            cid = str((doc.metadata or {}).get("chunk_id", ""))
+            if cid:
+                docs_by_chunk_id[cid] = doc
+
+        for hit in image_hits:
+            chunk_id = str(hit.get("chunk_id", ""))
+            image_url = hit.get("image_url", "")
+            caption = hit.get("caption", "")
+            placeholder = hit.get("image_placeholder", "")
+            score = hit.get("score", 0.0)
+
+            if chunk_id and chunk_id in docs_by_chunk_id:
+                # 命中：补 image_url 和 image_score 到已有 caption 块的 metadata
+                doc = docs_by_chunk_id[chunk_id]
+                metadata = dict(doc.metadata or {})
+                urls = list(metadata.get("image_urls") or [])
+                if image_url and image_url not in urls:
+                    urls.append(image_url)
+                metadata["image_urls"] = urls
+                metadata["image_score"] = score
+                doc.metadata = metadata
+            else:
+                # 未命中：用 caption 构造新 Document 兜底
+                if not caption and not placeholder:
+                    continue
+                page_content = (
+                    f"{placeholder}\n图片说明：{caption}" if placeholder else caption
+                )
+                docs.append(
+                    Document(
+                        page_content=page_content,
+                        metadata={
+                            "chunk_id": chunk_id,
+                            "image_placeholders": [placeholder] if placeholder else [],
+                            "image_urls": [image_url] if image_url else [],
+                            "chunk_type": "image",
+                            "score": score,
+                            "image_score": score,
+                            "filename": hit.get("file_id", ""),
+                            "file_path": hit.get("source_file", ""),
+                            "page_number": hit.get("page_number", 0),
+                        },
+                    )
+                )
+        return docs
+
+    def _retrieve_image_and_merge(
+        self, query: str, docs: List[Document], candidate_k: int
+    ) -> int:
+        """路线三：用文本 query 编码为多模态向量，检索 image collection 并融合。
+
+        返回 image_hits 数量（0 表示未启用或失败，caption 块仍可用）。
+        """
+        if not multimodal_embedding_service.enabled:
+            return 0
+        try:
+            query_image_vec = multimodal_embedding_service.embed_text(query)
+            if not query_image_vec:
+                return 0
+            image_hits = self.milvus_manager.dense_retrieve_image(
+                dense_embedding=query_image_vec,
+                top_k=candidate_k,
+            )
+            if image_hits:
+                self._merge_image_hits(docs, image_hits)
+            return len(image_hits)
+        except Exception as exc:
+            logger.warning("图像向量检索失败（caption 块仍可用）: {}", exc)
+            return 0
+
+    def _fuse_with_es_bm25(
+        self, query: str, retrieved: List[Document], candidate_k: int
+    ) -> Tuple[List[Document], int]:
+        """第三路召回：ES BM25 词法检索 + RRF 融合进向量召回结果。
+
+        返回 (融合后的候选文档, ES 命中数)。ES 未启用/失败时原样返回，
+        检索退化为纯向量路（与图像召回的降级策略一致）。
+        """
+        try:
+            es_docs = es_retrieval_service.bm25_search(
+                query, top_k=candidate_k, chunk_level=self.leaf_retrieve_level
+            )
+        except Exception as exc:
+            logger.warning("ES BM25 召回异常（降级纯向量结果）: {}", exc)
+            return retrieved, 0
+        if not es_docs:
+            return retrieved, 0
+        fused = ESRetrievalService.rrf_fuse(
+            retrieved, es_docs, k=60, limit=candidate_k
+        )
+        return fused, len(es_docs)
+
     def retrieve_documents(self, query: str, top_k: int = 5) -> Dict[str, Any]:
         candidate_k = max(top_k * 3, top_k)
         filter_expr = f"chunk_level == {self.leaf_retrieve_level}"
@@ -397,6 +504,14 @@ class RagUtilsService:
                 sparse_embedding=sparse_embedding,
                 top_k=candidate_k,
                 filter_expr=filter_expr,
+            )
+            # 第二路补充召回：ES BM25 词法检索 + RRF 融合（ES 不可用时自动降级）
+            retrieved, es_hits_count = self._fuse_with_es_bm25(
+                query, retrieved, candidate_k
+            )
+            # 路线三：图像向量多路召回 + 应用层融合
+            image_hits_count = self._retrieve_image_and_merge(
+                query, retrieved, candidate_k
             )
             reranked, rerank_meta = self._rerank_documents(
                 query=query, docs=retrieved, top_k=top_k
@@ -413,6 +528,8 @@ class RagUtilsService:
             rerank_meta["retrieval_mode"] = "hybrid"
             rerank_meta["candidate_k"] = candidate_k
             rerank_meta["leaf_retrieve_level"] = self.leaf_retrieve_level
+            rerank_meta["es_hits_count"] = es_hits_count
+            rerank_meta["image_hits_count"] = image_hits_count
             rerank_meta.update(merge_meta)
             return {"docs": merged_docs, "meta": rerank_meta}
         except Exception as exc:
@@ -424,6 +541,14 @@ class RagUtilsService:
                     dense_embedding=dense_embedding,
                     top_k=candidate_k,
                     filter_expr=filter_expr,
+                )
+                # 第二路补充召回：ES BM25 + RRF 融合（fallback 路径同样适用）
+                retrieved, es_hits_count = self._fuse_with_es_bm25(
+                    query, retrieved, candidate_k
+                )
+                # 路线三：图像向量多路召回 + 应用层融合（fallback 路径同样适用）
+                image_hits_count = self._retrieve_image_and_merge(
+                    query, retrieved, candidate_k
                 )
                 reranked, rerank_meta = self._rerank_documents(
                     query=query, docs=retrieved, top_k=top_k
@@ -440,6 +565,8 @@ class RagUtilsService:
                 rerank_meta["retrieval_mode"] = "dense_fallback"
                 rerank_meta["candidate_k"] = candidate_k
                 rerank_meta["leaf_retrieve_level"] = self.leaf_retrieve_level
+                rerank_meta["es_hits_count"] = es_hits_count
+                rerank_meta["image_hits_count"] = image_hits_count
                 rerank_meta.update(merge_meta)
                 return {"docs": merged_docs, "meta": rerank_meta}
             except Exception as fallback_exc:

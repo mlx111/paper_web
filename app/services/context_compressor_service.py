@@ -27,6 +27,7 @@ from langchain_core.messages import (
     SystemMessage,
     ToolMessage,
 )
+from utils.message_compat import clone_ai_message
 
 
 # ---------------------------------------------------------------------------
@@ -201,10 +202,8 @@ class ToolOutputPruner:
                                     truncated_args[k] = v
                             truncated["args"] = truncated_args
                         tcs.append(truncated)
-                    msg = AIMessage(
-                        content=getattr(msg, "content", ""),
-                        tool_calls=tcs,
-                    )
+                    msg = clone_ai_message(msg)
+                    msg.tool_calls = tcs
                 result.append(msg)
             else:
                 result.append(msg)
@@ -587,10 +586,9 @@ class MessageSanitizer:
                     if tc.get("id", "") in result_ids
                 ]
                 if valid_tcs or getattr(msg, "content", ""):
-                    cleaned.append(AIMessage(
-                        content=getattr(msg, "content", ""),
-                        tool_calls=valid_tcs if valid_tcs else None,
-                    ))
+                    preserved = clone_ai_message(msg)
+                    preserved.tool_calls = valid_tcs
+                    cleaned.append(preserved)
                 # If no valid tcs and no content, skip this message entirely
             else:
                 cleaned.append(msg)

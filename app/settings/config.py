@@ -101,6 +101,12 @@ class Settings:
         default_factory=lambda: _get_str("MILVUS_COLLECTION", "mypaperweb_embeddings")
     )
 
+    # ---- Elasticsearch：BM25 词法检索一路召回，与 Milvus 向量检索 RRF 融合 ----
+    # ES 不可用时自动降级为纯 Milvus 检索，零影响
+    es_retrieval_enabled: bool = field(default_factory=lambda: _get_bool("ES_RETRIEVAL_ENABLED", True))
+    es_host: str = field(default_factory=lambda: _get_str("ES_HOST", "http://localhost:9200"))
+    es_index: str = field(default_factory=lambda: _get_str("ES_INDEX", "mypaperweb_chunks"))
+
     rag_top_k: int = field(default_factory=lambda: _get_int("RAG_TOP_K", 3))
     rag_model: str = field(default_factory=lambda: _get_str("RAG_MODEL", "qwen3.5-flash"))
 
@@ -151,6 +157,35 @@ class Settings:
         default_factory=lambda: _get_str("MCP_MONITOR_URL", "http://localhost:8004/mcp")
     )
 
+    # ---- 多模态 RAG：视觉模型（论文图片 caption 生成）----
+    # 缺省复用 DashScope 文本模型的 key/base，可通过环境变量单独覆盖
+    vision_enabled: bool = field(default_factory=lambda: _get_bool("VISION_ENABLED", True))
+    vision_model: str = field(default_factory=lambda: _get_str("VISION_MODEL", "qwen-vl-max"))
+    vision_api_base: str = field(
+        default_factory=lambda: _get_str("VISION_API_BASE", "")
+    )
+    vision_api_key: str = field(
+        default_factory=lambda: _get_str("VISION_API_KEY", "")
+    )
+    # 索引时为图片生成 caption 失败是否阻断索引；False 时单图失败仅告警
+    vision_strict: bool = field(default_factory=lambda: _get_bool("VISION_STRICT", False))
+
+    # ---- 多模态 RAG 路线三：图像原生向量入索引（SOTA）----
+    # 与 caption 双轨并存：caption 块写主 collection，图像向量写独立 image collection
+    multimodal_embedding_enabled: bool = field(
+        default_factory=lambda: _get_bool("MULTIMODAL_EMBEDDING_ENABLED", True)
+    )
+    multimodal_embedding_model: str = field(
+        default_factory=lambda: _get_str("MULTIMODAL_EMBEDDING_MODEL", "multimodal-embedding-one-peace-v1")
+    )
+    multimodal_embedding_dim: int = field(
+        default_factory=lambda: _get_int("MULTIMODAL_EMBEDDING_DIM", 1024)
+    )
+    # 图像向量独立 collection，零迁移风险；与主 collection 的 caption 块通过 chunk_id 关联
+    milvus_image_collection: str = field(
+        default_factory=lambda: _get_str("MILVUS_IMAGE_COLLECTION", "mypaperweb_image_embeddings")
+    )
+
     # ---- Phase 6: 模型路由 + 语义缓存 + Langfuse 可观测 ----
     # 简单问题（实体问答/寒暄）路由到廉价模型，复杂问题走默认模型
     model_routing_enabled: bool = field(default_factory=lambda: _get_bool("MODEL_ROUTING_ENABLED", False))
@@ -189,6 +224,18 @@ class Settings:
         return self.milvus_collection
 
     @property
+    def ES_RETRIEVAL_ENABLED(self) -> bool:
+        return self.es_retrieval_enabled
+
+    @property
+    def ES_HOST(self) -> str:
+        return self.es_host
+
+    @property
+    def ES_INDEX(self) -> str:
+        return self.es_index
+
+    @property
     def WEB_SEARCH_KEY(self) -> str:
         return self.web_search_key
 
@@ -199,6 +246,46 @@ class Settings:
     @property
     def TAVILY_API_KEY(self) -> str:
         return self.tavily_api_key
+
+    # ---- 多模态 RAG：视觉模型配置访问器（缺省回退 DashScope）----
+    @property
+    def VISION_ENABLED(self) -> bool:
+        return self.vision_enabled
+
+    @property
+    def VISION_MODEL(self) -> str:
+        return self.vision_model or "qwen-vl-max"
+
+    @property
+    def VISION_API_BASE(self) -> str:
+        # 未单独配置则复用 DashScope 文本模型 base
+        return self.vision_api_base or self.DASHSCOPE_API_BASE
+
+    @property
+    def VISION_API_KEY(self) -> str:
+        # 未单独配置则复用 DashScope 文本模型 key
+        return self.vision_api_key or self.DASHSCOPE_API_KEY
+
+    @property
+    def VISION_STRICT(self) -> bool:
+        return self.vision_strict
+
+    # ---- 多模态 embedding（路线三）配置访问器 ----
+    @property
+    def MULTIMODAL_EMBEDDING_ENABLED(self) -> bool:
+        return self.multimodal_embedding_enabled
+
+    @property
+    def MULTIMODAL_EMBEDDING_MODEL(self) -> str:
+        return self.multimodal_embedding_model or "multimodal-embedding-one-peace-v1"
+
+    @property
+    def MULTIMODAL_EMBEDDING_DIM(self) -> int:
+        return self.multimodal_embedding_dim
+
+    @property
+    def MILVUS_IMAGE_COLLECTION(self) -> str:
+        return self.milvus_image_collection
 
     @property
     def SUMMARY_TRIGGER(self) -> int:

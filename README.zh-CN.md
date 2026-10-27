@@ -10,7 +10,7 @@ MyPaperWeb 是一个面向论文阅读、文档问答和研究分析的 Agentic 
 - **文件问答**：上传 PDF、DOCX、Markdown、Excel 等文件后，基于文档内容进行问答。
 - **图文文档问答**：解析 PDF/DOCX 中的图片，保留图片位置，并在回答中渲染相关图片。
 - **论文研究工作流**：支持论文搜索、下载、研究计划生成、工具调用和 judge 反馈。
-- **混合检索**：结合 dense embedding 和 BM25 风格稀疏检索，提高召回质量。
+- **混合检索**：三路召回 + RRF 融合——Milvus dense 向量（语义泛化）+ Milvus sparse 向量（BM25 风格稀疏）+ Elasticsearch BM25（精确术语强，模型名/缩写/数字/罕见实体不丢），用 Reciprocal Rank Fusion 融合后统一进 rerank。ES 不可用时自动降级为纯 Milvus 双路检索。
 - **上下文工程**：通过 `Gather -> Select -> Structure -> Compress -> Assemble` 组织模型上下文。
 - **长期记忆**：按会话保存高价值偏好、约束、总结和决策。
 - **流式输出**：文件问答和研究模块默认使用 SSE 流式响应。
@@ -24,10 +24,10 @@ MyPaperWeb 是一个面向论文阅读、文档问答和研究分析的 Agentic 
 | 前端 | Vue 3, Vite, marked, highlight.js |
 | 后端 | FastAPI, SSE, Redis, SQLAlchemy |
 | Agent | LangChain, LangGraph, deepagents |
-| RAG | Milvus, pymilvus, DashScope embeddings, rerank API |
+| RAG | Milvus, pymilvus, DashScope embeddings, rerank API, Elasticsearch (BM25) |
 | 文档解析 | PyPDF, PyMuPDF, pdfplumber, docx2txt, python-docx, Pillow, unstructured, openpyxl |
 | 搜索 | Web Search API, CORE API, Elasticsearch |
-| 基础设施 | Docker Compose, Milvus, MinIO, etcd, Attu |
+| 基础设施 | Docker Compose, Milvus, MinIO, etcd, Attu, Elasticsearch |
 
 ## 架构说明
 
@@ -245,6 +245,7 @@ app/data/images/
 - 这是一个完整的 Agentic RAG 全栈应用，不是单 prompt demo。
 - 前端、后端、RAG、Agent、Research Workflow 都有清晰分层。
 - 文件问答使用 Milvus 混合检索和上下文工程。
+- 三路召回 + RRF 融合：Milvus dense/sparse 向量 + Elasticsearch BM25，向量擅长语义泛化、BM25 擅长精确术语，互补后统一 rerank；ES 不可用自动降级纯向量。
 - 支持图文文档问答，可以把 PDF/DOCX 中的图片渲染回回答。
 - 支持流式输出、来源展示、长期记忆和健康检查。
 - 有测试、环境检查脚本和 README 文档，方便别人 clone 后运行。

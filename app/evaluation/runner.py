@@ -352,7 +352,7 @@ class EvaluationRunner:
                 }
         return None
 
-    async def invoke_agent(self, question: str, mode: str = "deep", session_id: str = "") -> dict[str, Any]:
+    async def invoke_agent(self, question: str, mode: str = "deep", session_id: str = "", skip_cache: bool = False) -> dict[str, Any]:
         """Run a single agent query and return its answer + tool-call trajectory.
 
         Public helper used by the standard evaluation target endpoint
@@ -362,10 +362,16 @@ class EvaluationRunner:
 
         Phase 6: quick 路径支持语义缓存（命中跳过 agent）与意图感知模型路由，
         并透出 token_usage 供评测平台做成本量化。
+
+        ``skip_cache`` is used by multi-turn evaluation: every turn must hit
+        the agent so conversation history is genuinely consulted — a cache
+        hit from another session would bypass memory and invalidate the
+        contextual-consistency measurement.
         """
-        cache_hit = self._lookup_semantic_cache(question, mode)
-        if cache_hit is not None:
-            return cache_hit
+        if not skip_cache:
+            cache_hit = self._lookup_semantic_cache(question, mode)
+            if cache_hit is not None:
+                return cache_hit
 
         agent, routing_info = resolve_target_agent(mode, question)
         try:
@@ -379,12 +385,15 @@ class EvaluationRunner:
             if token_usage:
                 meta["token_usage"] = token_usage
             # 语义缓存写入不依赖 token_usage 是否提取到（缓存的是 answer）；
-            # _store_semantic_cache 内部已判断 quick 模式与开关
-            self._store_semantic_cache(
-                question, answer_text, mode,
-                model=str(meta.get("model") or ""),
-                token_usage=token_usage,
-            )
+            # _store_semantic_cache 内部已判断 quick 模式与开关。
+            # 多轮评测（skip_cache）同样不写缓存，避免带 session 上下文的
+            # 答案污染无状态缓存，被后续单轮问答错误命中。
+            if not skip_cache:
+                self._store_semantic_cache(
+                    question, answer_text, mode,
+                    model=str(meta.get("model") or ""),
+                    token_usage=token_usage,
+                )
 
             return {
                 "answer": answer_text,

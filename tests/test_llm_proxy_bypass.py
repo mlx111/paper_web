@@ -1,5 +1,4 @@
 import sys
-import types
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -30,65 +29,45 @@ class LlmProxyBypassTest(unittest.TestCase):
             except RuntimeError:
                 pass
 
-    def test_qwen_model_init_passes_proxy_bypass_clients(self):
-        fake_chatqwen = []
+    def test_universal_model_init_passes_proxy_bypass_clients(self):
+        created_models = []
 
-        class FakeChatQwen:
+        class FakeModel:
             def __init__(self, **kwargs):
-                fake_chatqwen.append(kwargs)
+                created_models.append(kwargs)
 
-        original_langchain_qwq = sys.modules.get("langchain_qwq")
-        sys.modules["langchain_qwq"] = types.SimpleNamespace(ChatQwen=FakeChatQwen)
-        try:
-            if "models.factory" in sys.modules:
-                del sys.modules["models.factory"]
-            from models.factory import QwenModel
+        from models.factory import UniversalModelFactory
 
-            with patch("models.factory.create_llm_http_client", return_value="sync-client"), patch(
-                "models.factory.create_llm_async_http_client", return_value="async-client"
-            ):
-                model = QwenModel()
-                model.init_model(True)
-        finally:
-            if original_langchain_qwq is None:
-                sys.modules.pop("langchain_qwq", None)
-            else:
-                sys.modules["langchain_qwq"] = original_langchain_qwq
-            sys.modules.pop("models.factory", None)
+        with patch("models.factory.UniversalChatOpenAI", FakeModel), patch(
+            "models.factory.create_llm_http_client", return_value="sync-client"
+        ), patch("models.factory.create_llm_async_http_client", return_value="async-client"), patch(
+            "services.llm_config_service.llm_config_service.get_active_params",
+            return_value={"provider": "deepseek", "model": "test-model", "base_url": "https://example.test/v1", "api_key": "test"},
+        ):
+            UniversalModelFactory().init_model(True)
 
-        self.assertEqual(len(fake_chatqwen), 1)
-        kwargs = fake_chatqwen[0]
+        self.assertEqual(len(created_models), 1)
+        kwargs = created_models[0]
         self.assertEqual(kwargs["http_client"], "sync-client")
         self.assertEqual(kwargs["http_async_client"], "async-client")
         self.assertTrue(kwargs["streaming"])
 
     def test_llm_factory_passes_proxy_bypass_clients(self):
-        fake_chatqwen = []
+        created_models = []
 
-        class FakeChatQwen:
+        class FakeModel:
             def __init__(self, **kwargs):
-                fake_chatqwen.append(kwargs)
+                created_models.append(kwargs)
 
-        original_langchain_qwq = sys.modules.get("langchain_qwq")
-        sys.modules["langchain_qwq"] = types.SimpleNamespace(ChatQwen=FakeChatQwen)
-        try:
-            if "core.llm_factory" in sys.modules:
-                del sys.modules["core.llm_factory"]
-            from core.llm_factory import LLMFactory
+        from core.llm_factory import LLMFactory
 
-            with patch("core.llm_factory.create_llm_http_client", return_value="sync-client"), patch(
-                "core.llm_factory.create_llm_async_http_client", return_value="async-client"
-            ):
-                LLMFactory.create_chat_model(streaming=False)
-        finally:
-            if original_langchain_qwq is None:
-                sys.modules.pop("langchain_qwq", None)
-            else:
-                sys.modules["langchain_qwq"] = original_langchain_qwq
-            sys.modules.pop("core.llm_factory", None)
+        with patch("core.llm_factory.UniversalChatOpenAI", FakeModel), patch(
+            "core.llm_factory.create_llm_http_client", return_value="sync-client"
+        ), patch("core.llm_factory.create_llm_async_http_client", return_value="async-client"):
+            LLMFactory.create_chat_model(streaming=False)
 
-        self.assertEqual(len(fake_chatqwen), 1)
-        kwargs = fake_chatqwen[0]
+        self.assertEqual(len(created_models), 1)
+        kwargs = created_models[0]
         self.assertEqual(kwargs["http_client"], "sync-client")
         self.assertEqual(kwargs["http_async_client"], "async-client")
         self.assertFalse(kwargs["streaming"])

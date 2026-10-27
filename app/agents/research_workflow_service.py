@@ -29,6 +29,7 @@ from pydantic import BaseModel, Field
 
 from models.factory import qwen_model
 from services.history_service import HistoryService
+from utils.message_compat import clone_ai_message, prepare_research_messages, sanitize_tool_call_pairs
 from tools.academic_tool import academic_search_papers, get_paper_abstract, get_paper_bibtex, search_github_repos
 from tools.websearch_tool import web_search
 from tools.paper_refiner_tool import build_citation_pool, review_paper_quality
@@ -386,12 +387,7 @@ class ResearchWorkflowService:
         # - agent_llm: 负责调用论文检索 / 下载工具
         # - judge_llm: 负责给最终答案打分并给反馈
         self.streaming = streaming
-        self.model = qwen_model.init_model(streaming)
-
-        self.decision_llm = self.model.with_structured_output(ResearchDecision)
-        self.clarify_llm = self.model.with_structured_output(ResearchClarification)
-        self.agent_llm = self.model.bind_tools(TOOLS)
-        self.judge_llm = self.model.with_structured_output(ResearchJudge)
+        self.reset_agent()
 
         # 第 2 步：创建 research 专属历史目录。
         # 这样 research 模块的对话历史不会和 chat / file 混在一起。
@@ -411,6 +407,47 @@ class ResearchWorkflowService:
         self._app_lock = asyncio.Lock()
 
         logger.info("Research workflow service initialized, streaming={}", streaming)
+
+    def reset_agent(self) -> None:
+        """用当前 LLM 配置重建全部模型绑定，保留流程图、会话和断点连接。"""
+        model = qwen_model.init_model(self.streaming)
+        # 先构建全部包装器，成功后再替换，避免初始化失败留下新旧混用的模型。
+        decision_llm = self._build_structured_llm(model, ResearchDecision)
+        clarify_llm = self._build_structured_llm(model, ResearchClarification)
+        agent_llm = model.bind_tools(TOOLS)
+        judge_llm = self._build_structured_llm(model, ResearchJudge)
+        self.model = model
+        self.decision_llm = decision_llm
+        self.clarify_llm = clarify_llm
+        self.agent_llm = agent_llm
+        self.judge_llm = judge_llm
+
+    @staticmethod
+    def _build_structured_llm(model: Any, schema: type[BaseModel]) -> Any:
+        """用 JSON 提示和本地校验获取结构化结果，兼容思考模式。
+
+        with_structured_output 默认通过 tool_choice 强制调用指定工具，
+        部分思考模型会拒绝该参数。控制节点只需要结构化文本，不需要工具。
+        """
+        from langchain_core.output_parsers import PydanticOutputParser
+        from langchain_core.runnables import RunnableLambda
+
+        parser = PydanticOutputParser(pydantic_object=schema)
+        instructions = parser.get_format_instructions()
+
+        def prepare_messages(messages: Sequence[BaseMessage]) -> list[BaseMessage]:
+            prepared = list(messages)
+            if prepared and isinstance(prepared[0], SystemMessage):
+                prepared[0] = SystemMessage(content=f"{prepared[0].content}\n\n{instructions}")
+            else:
+                prepared.insert(0, SystemMessage(content=instructions))
+            return prepared
+
+        return RunnableLambda(prepare_messages) | model | parser
+
+    def _model_messages(self, messages: Sequence[BaseMessage]) -> list[BaseMessage]:
+        safe_messages = sanitize_tool_call_pairs(list(messages))
+        return prepare_research_messages(safe_messages, provider=getattr(self.model, "provider", ""))
 
     # ------------------------------------------------------------------
     # LangGraph checkpointer（断点恢复）
@@ -620,6 +657,54 @@ class ResearchWorkflowService:
     @staticmethod
     def _is_search_result_tool(tool_name: str) -> bool:
         return tool_name in {"search-papers", "academic_search_papers", "search_github_repos", "web_search"}
+
+    @staticmethod
+    def _stream_message_events(node_name: str, message: BaseMessage) -> list[dict[str, Any]]:
+        """Convert graph messages to user-visible progress without exposing tool payloads."""
+        if isinstance(message, AIMessage) and getattr(message, "tool_calls", None):
+            return [
+                {
+                    "type": "tool_call",
+                    "node": node_name,
+                    "data": {
+                        "tool_name": tool_call.get("name", "unknown"),
+                        "arguments": tool_call.get("args", {}),
+                    },
+                }
+                for tool_call in message.tool_calls
+            ]
+        if isinstance(message, ToolMessage) or isinstance(message, HumanMessage):
+            return []
+        if isinstance(message, AIMessage):
+            text = ResearchWorkflowService._extract_text_for_stream(message)
+            if not text:
+                return []
+            message_name = getattr(message, "name", "")
+            if (
+                node_name in {"planning", "judge", "expand", "branch_gather", "branch_synthesize"}
+                or message_name in {"clarify", "refine_query", "judge", "expand", "branch_gather", "branch_synthesize"}
+            ):
+                return [{"type": "debug", "node": node_name, "message_type": type(message).__name__, "data": text}]
+            return [{"type": "content", "node": node_name, "data": text}]
+        return [{
+            "type": "debug",
+            "node": node_name,
+            "message_type": type(message).__name__,
+            "data": ResearchWorkflowService._extract_text_for_stream(message),
+        }]
+
+    @staticmethod
+    def _extract_text_for_stream(message: BaseMessage) -> str:
+        content = getattr(message, "content", "")
+        if content is None:
+            return ""
+        if isinstance(content, list):
+            return "\n".join(
+                str(item["text"])
+                for item in content
+                if isinstance(item, dict) and item.get("text")
+            ).strip()
+        return str(content).strip()
 
     @staticmethod
     def _internal_message_names() -> set[str]:
@@ -1305,7 +1390,7 @@ class ResearchWorkflowService:
             # 节点 1：先判断用户问题是否真的需要论文/文献级研究。
             # 如果只是普通问答，这里会直接返回简答，不进入后续研究流程。
             system_prompt = SystemMessage(content=DECISION_PROMPT)
-            response: ResearchDecision = self.decision_llm.invoke([system_prompt] + list(state["messages"]))
+            response: ResearchDecision = self.decision_llm.invoke([system_prompt] + self._model_messages(state["messages"]))
             output: dict[str, Any] = {"requires_research": response.requires_research}
             if response.answer:
                 output["messages"] = [AIMessage(content=response.answer, name="decision")]
@@ -1334,7 +1419,7 @@ class ResearchWorkflowService:
             question = self._latest_user_question(state.get("messages", []))
             system_prompt = SystemMessage(content=CLARIFICATION_PROMPT)
             try:
-                response: ResearchClarification = self.clarify_llm.invoke([system_prompt] + list(state["messages"]))
+                response: ResearchClarification = self.clarify_llm.invoke([system_prompt] + self._model_messages(state["messages"]))
             except Exception:
                 response = self._fallback_clarification(question)
 
@@ -1455,11 +1540,15 @@ class ResearchWorkflowService:
                     )
                 )
             )
-            response = self.model.invoke([system_prompt] + list(state["messages"]))
+            response = self.model.invoke([system_prompt] + self._model_messages(state["messages"]))
             plan_text = self._extract_text(response)
             return {
                 "research_plan": plan_text,
-                "messages": [AIMessage(content=plan_text, name="planning")],
+                "messages": [
+                    clone_ai_message(response, content=plan_text, name="planning")
+                    if isinstance(response, AIMessage)
+                    else AIMessage(content=plan_text, name="planning")
+                ],
             }
 
         def tools_node(state: ResearchState) -> dict[str, Any]:
@@ -1579,7 +1668,20 @@ class ResearchWorkflowService:
                 except Exception:
                     pass
 
-            response = self.agent_llm.invoke([system_prompt] + state_messages)
+            # Once the tool-round budget is exhausted, force a plain model
+            # response.  Sending another tool call to judge without executing
+            # it creates an invalid assistant/tool message sequence.
+            model_for_turn = self.model if state.get("tool_rounds", 0) >= 3 else self.agent_llm
+            turn_prompt = system_prompt
+            if model_for_turn is self.model and state.get("tool_rounds", 0) >= 3:
+                turn_prompt = SystemMessage(
+                    content=(
+                        f"{system_prompt.content}\n\n"
+                        "Tool-call budget reached. Produce the best final research answer now; "
+                        "do not request or call any more tools."
+                    )
+                )
+            response = model_for_turn.invoke([turn_prompt] + self._model_messages(state_messages))
             if isinstance(response, AIMessage):
                 response.name = "agent"
             return {"messages": [response]}
@@ -1603,7 +1705,7 @@ class ResearchWorkflowService:
                 return {"is_good_answer": True}
 
             system_prompt = SystemMessage(content=JUDGE_PROMPT)
-            response: ResearchJudge = self.judge_llm.invoke([system_prompt] + list(state["messages"]))
+            response: ResearchJudge = self.judge_llm.invoke([system_prompt] + self._model_messages(state["messages"]))
             output: dict[str, Any] = {
                 "is_good_answer": response.is_good_answer,
                 "num_feedback_requests": num_feedback_requests + 1,
@@ -1772,46 +1874,8 @@ class ResearchWorkflowService:
 
                     for message in messages:
                         streamed_messages.append(message)
-                        message_type = type(message).__name__
-
-                        if isinstance(message, AIMessage) and getattr(message, "tool_calls", None):
-                            for tool_call in message.tool_calls:
-                                yield {
-                                    "type": "tool_call",
-                                    "node": node_name,
-                                    "data": {
-                                        "tool_name": tool_call.get("name", "unknown"),
-                                        "arguments": tool_call.get("args", {}),
-                                    },
-                                }
-                            continue
-
-                        if isinstance(message, ToolMessage):
-                            event_type = "search_results" if self._is_search_result_tool(message.name or "") else "content"
-                            yield {
-                                "type": event_type,
-                                "node": node_name,
-                                "data": message.content,
-                            }
-                            continue
-
-                        if isinstance(message, AIMessage):
-                            text = self._extract_text(message)
-                            if text:
-                                message_name = getattr(message, "name", "")
-                                if (
-                                    node_name in {"planning", "judge", "expand", "branch_gather", "branch_synthesize"}
-                                    or message_name in {"clarify", "refine_query", "judge", "expand", "branch_gather", "branch_synthesize"}
-                                ):
-                                    yield {"type": "debug", "node": node_name, "message_type": message_type, "data": text}
-                                else:
-                                    yield {"type": "content", "node": node_name, "data": text}
-                            continue
-
-                        if isinstance(message, HumanMessage):
-                            continue
-
-                        yield {"type": "debug", "node": node_name, "message_type": message_type, "data": self._extract_text(message)}
+                        for event in self._stream_message_events(node_name, message):
+                            yield event
 
             # 从 checkpointer 拉取最终状态作为权威值。
             # 断点续跑时 streamed_messages/final_state_values 只包含续跑后的节点，

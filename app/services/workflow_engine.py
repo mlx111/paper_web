@@ -331,9 +331,9 @@ class WorkflowEngine:
             init_kwargs = dict(model_kwargs or {})
             init_kwargs.update(step.model_kwargs or {})
             try:
-                llm = qwen_model.init_model(steram=False, **init_kwargs)
+                llm = qwen_model.init_model(streaming=False, **init_kwargs)
             except TypeError:
-                llm = qwen_model.init_model(steram=False)
+                llm = qwen_model.init_model(streaming=False)
         bound_llm = llm.bind_tools(tools) if tools else llm
 
         messages: list = [SystemMessage(content=instruction)]

@@ -93,6 +93,25 @@ services:
       timeout: 3s
       retries: 5
 
+  # ---- Elasticsearch：BM25 词法检索一路召回，与 Milvus 向量检索 RRF 融合 ----
+  elasticsearch:
+    image: docker.1ms.run/elastic/elasticsearch:8.13.4
+    restart: unless-stopped
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: -Xms512m -Xmx512m
+    volumes:
+      - es-data:/usr/share/elasticsearch/data
+    ports:
+      - "9200:9200"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+
   # ---- MySQL（可选：登录认证 / 历史记录功能需要）----
   mysql:
     image: docker.1ms.run/library/mysql:8.0
@@ -123,6 +142,10 @@ services:
       REDIS_URL: redis://redis:6379/0
       MILVUS_HOST: standalone
       MILVUS_PORT: "19530"
+      # ES BM25 词法召回（RAG 第三路召回，RRF 融合；不可用时自动降级纯向量检索）
+      ES_RETRIEVAL_ENABLED: "true"
+      ES_HOST: http://elasticsearch:9200
+      ES_INDEX: mypaperweb_chunks
       # MySQL 仅在启用 mysql profile 后可用；核心 RAG/Agent 功能不依赖它
       DB_URL: mysql+aiomysql://root:paperpass@mysql:3306/paper?charset=utf8
       # 以下 Key 从宿主机环境变量/.env 透传（留空则对应功能不可用）
@@ -153,6 +176,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
 
   # ---- 前端 ----
   # 宿主机端口用 5174（5173 若被 llmops-platform 栈占用会冲突）
@@ -170,6 +195,7 @@ volumes:
   minio-data:
   milvus-data:
   redis-data:
+  es-data:
   mysql-data:
   uploads-data:
   app-data:

@@ -8,15 +8,13 @@ import jieba
 import requests
 from loguru import logger
 
-from settings.config import config
+from services.embedding_config_service import embedding_config_service
 
 
 class Embodedings:
     def __init__(self) -> None:
-        self.api_key = config.DASHSCOPE_API_KEY
-        self.base_url = config.DASHSCOPE_API_BASE
-        self.embodeding = config.embedding_model_name
-
+        # 文本 embedding 的 api_key / base_url / 模型名改为 lazy 读取（property），
+        # 配置改了立即生效，无需重启容器
         self.k1 = 1.5
         self.b = 0.75
         self._vocab: dict[str, int] = {}
@@ -30,6 +28,19 @@ class Embodedings:
             "from", "as", "that", "this", "these", "those", "it", "its",
         }
         logger.info("Embedding 服务初始化完成")
+
+    # ---- lazy 读取：每次从 embedding_config_service 读当前激活值 ----
+    @property
+    def api_key(self) -> str:
+        return embedding_config_service.get_text_params().get("api_key") or ""
+
+    @property
+    def base_url(self) -> str:
+        return embedding_config_service.get_text_params().get("base_url") or ""
+
+    @property
+    def embodeding(self) -> str:
+        return embedding_config_service.get_text_params().get("model") or "text-embedding-v4"
 
     def bm25_preprocess(self, text: str) -> list[str]:
         try:

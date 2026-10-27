@@ -6,11 +6,26 @@ from typing import Any, Dict, Optional
 
 from loguru import logger
 
+try:
+    from langchain_core.documents import Document
+except Exception:  # pragma: no cover - 兼容轻量测试环境
+    class Document:  # type: ignore[no-redef]
+        def __init__(self, page_content: str, metadata: dict | None = None):
+            self.page_content = page_content
+            self.metadata = metadata or {}
+
+from settings.config import config
 from services.document_splitter_service import document_splitter_service
-from services.chunk_image_store_service import extract_image_placeholders
+from services.chunk_image_store_service import (
+    default_chunk_image_store,
+    extract_image_placeholders,
+)
 from services.document_image_parser_service import document_image_parser_service
+from services.image_caption_service import image_caption_service
 from services.index_manifest_service import index_manifest_service
+from services.mlivus_client_service import mlivus_client_service
 from services.mlivus_server_service import mlivus_server_service
+from services.multimodal_embedding_service import multimodal_embedding_service
 from services.parent_chunk_service import parent_chunk_store
 
 
@@ -94,12 +109,156 @@ class VectorIndexService:
                         len(image_docs),
                         normalized_path,
                     )
+                    # 多模态 RAG：为每张图生成 caption 并追加独立图片块
+                    self._augment_with_image_chunks(image_docs, path)
                     return image_docs
                 logger.info("图文解析未发现图片，回退普通解析: {}", normalized_path)
             except Exception as exc:
                 logger.warning("图文解析失败，回退普通解析: {}，错误: {}", normalized_path, exc)
 
         return document_splitter_service.split_document(normalized_path)
+
+    def _augment_with_image_chunks(self, image_docs: list[Document], path: Path) -> None:
+        """对已解析的图文分块，遍历其中的图片占位符双轨写入：
+
+        路线一（caption 块）：qwen-vl-max 生成中文 caption → 独立图片块写入主 collection
+        路线三（图像向量）：multimodal-embedding 生成图像原生向量 → 写入 image collection
+
+        双轨互不依赖：caption 失败仍可写 image 向量，image 向量失败仍可写 caption 块。
+        仅当两者都失败时跳过该图。原始块保留 `<<IMAGE:xxxx>>` 占位符。
+        """
+        if not image_docs:
+            return
+
+        # 收集本文件所有占位符（保持出现顺序）
+        seen_placeholders: list[str] = []
+        seen_set: set[str] = set()
+        for doc in image_docs:
+            for ph in extract_image_placeholders(doc.page_content or ""):
+                if ph not in seen_set:
+                    seen_set.add(ph)
+                    seen_placeholders.append(ph)
+
+        if not seen_placeholders:
+            return
+
+        logger.info(
+            "为 {} 张图片生成 caption + 图像向量，文件: {}",
+            len(seen_placeholders),
+            path.name,
+        )
+
+        # 确保 image collection 存在（路线三独立 collection，零迁移风险）
+        if multimodal_embedding_service.enabled:
+            try:
+                mlivus_client_service.init_image_collection()
+            except Exception as exc:
+                logger.warning("image collection 初始化失败，路线三降级为单轨: {}", exc)
+
+        filename = path.name
+        file_type = "PDF" if path.suffix.lower() == ".pdf" else "Word"
+
+        # 用最后一页 page_number 作为图片块的页码基线（避免误读为 page=0）
+        last_page_number = 0
+        for doc in image_docs:
+            page = int((doc.metadata or {}).get("page_number", 0) or 0)
+            if page > last_page_number:
+                last_page_number = page
+
+        strict = config.VISION_STRICT
+        chunk_idx_base = len(image_docs)
+        caption_appended = 0
+        image_vec_appended = 0
+
+        for idx, placeholder in enumerate(seen_placeholders):
+            # ① 路线一：生成 caption
+            try:
+                caption = image_caption_service.caption_placeholder(placeholder)
+            except Exception as exc:
+                logger.warning("生成 caption 异常: {}，错误: {}", placeholder, exc)
+                caption = ""
+
+            # ② 路线三：生成图像向量
+            image_vec: list[float] = []
+            if multimodal_embedding_service.enabled:
+                try:
+                    image_record = default_chunk_image_store.get_image_record(placeholder) or {}
+                    image_path_str = image_record.get("image_path") or ""
+                    if image_path_str and Path(image_path_str).exists():
+                        img_path = Path(image_path_str)
+                        ext = img_path.suffix.lstrip(".").lower() or "png"
+                        image_bytes = img_path.read_bytes()
+                        image_vec = multimodal_embedding_service.embed_image(image_bytes, ext)
+                    else:
+                        logger.warning("未找到图片文件，跳过图像向量: {}", placeholder)
+                except Exception as exc:
+                    logger.warning("生成图像向量异常: {}，错误: {}", placeholder, exc)
+                    image_vec = []
+
+            # ③ 双轨互不依赖：两者都失败才跳过
+            if not caption and not image_vec:
+                if strict:
+                    raise RuntimeError(
+                        f"图片 caption 和图像向量均失败: {placeholder}"
+                    )
+                logger.warning("caption 和图像向量均失败，跳过: {}", placeholder)
+                continue
+
+            image_id = placeholder.strip("<>").replace("IMAGE:", "").strip()
+            chunk_id = f"{filename}::image_caption::{image_id}"
+
+            # 路线一：写主 collection caption 块
+            if caption:
+                page_content = f"{placeholder}\n图片说明：{caption}"
+                image_record = default_chunk_image_store.get_image_record(placeholder) or {}
+                metadata = {
+                    "_source": path.as_posix(),
+                    "_extension": path.suffix,
+                    "_file_name": filename,
+                    "filename": filename,
+                    "file_path": path.as_posix(),
+                    "file_type": file_type,
+                    "page_number": int(image_record.get("page_number") or last_page_number),
+                    "chunk_id": chunk_id,
+                    "chunk_level": 3,  # 叶子层，与原文档一致，可被默认 hybrid_retrieve 命中
+                    "chunk_idx": chunk_idx_base + idx,
+                    "parent_chunk_id": "",
+                    "root_chunk_id": chunk_id,
+                    "image_placeholders": [placeholder],
+                    "chunk_type": "image",
+                }
+                image_docs.append(
+                    Document(page_content=page_content, metadata=metadata)
+                )
+                caption_appended += 1
+
+            # 路线三：写 image collection 图像向量
+            if image_vec:
+                image_record = default_chunk_image_store.get_image_record(placeholder) or {}
+                try:
+                    mlivus_client_service.insert_image([{
+                        "image_dense_embedding": image_vec,
+                        "chunk_id": chunk_id,  # 关联主 collection 的 caption 块
+                        "image_placeholder": placeholder,
+                        "image_url": f"/file/image/{image_id}",
+                        "caption": caption or "",
+                        "source_file": path.as_posix(),
+                        "page_number": int(image_record.get("page_number") or last_page_number),
+                        "file_id": filename,
+                    }])
+                    image_vec_appended += 1
+                    logger.info("图像向量写入成功: {}", placeholder)
+                except Exception as exc:
+                    logger.warning("图像向量写入失败（caption 块仍可用）: {}，错误: {}", placeholder, exc)
+
+        logger.info(
+            "图片双轨写入完成: caption 块 {}/{}，图像向量 {}/{}，文件: {}",
+            caption_appended,
+            len(seen_placeholders),
+            image_vec_appended,
+            len(seen_placeholders),
+            filename,
+        )
 
     def index_directory(self, directory_path: Optional[str] = None) -> IndexingResult:
         result = IndexingResult()
@@ -239,6 +398,11 @@ class VectorIndexService:
                 ]
                 mlivus_server_service.delete_by_source(normalized_path)
                 parent_chunk_store.delete_by_source(normalized_path)
+                # 路线三：清理 image collection 旧数据（容错：collection 不存在时跳过）
+                try:
+                    mlivus_client_service.delete_image_by_source(normalized_path)
+                except Exception as exc:
+                    logger.warning("清理 image collection 旧数据失败（可忽略）: {}", exc)
                 if parent_docs:
                     parent_chunk_store.upsert_documents(parent_docs)
                 mlivus_server_service.write_documents(documents)

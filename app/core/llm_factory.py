@@ -1,19 +1,11 @@
-"""LLM 工厂类
+"""Legacy entry point for explicit OpenAI-compatible model parameters."""
 
-使用 LangChain ChatOpenAI 通过 OpenAI 兼容模式调用阿里云 DashScope
-这种方式便于后续切换到其他支持 OpenAI API 的模型提供商
-
-支持的模型提供商（只需修改 base_url 和 api_key）：
-- 阿里云 DashScope: https://dashscope.aliyuncs.com/compatible-mode/v1
-- OpenAI: https://api.openai.com/v1
-- Azure OpenAI: https://{resource}.openai.azure.com
-- 其他兼容 OpenAI API 的服务
-"""
-
-from settings.config import config
-from langchain_qwq import ChatQwen
 from core.http_client_factory import create_llm_async_http_client, create_llm_http_client
+from models.factory import UniversalChatOpenAI, UniversalModelFactory
 from pydantic import SecretStr
+from settings.config import config
+
+
 class LLMFactory:
     """LLM 工厂类 - 使用 OpenAI 兼容模式"""
 
@@ -27,22 +19,20 @@ class LLMFactory:
         streaming: bool = True,
         base_url: str | None = None,
         api_key: str | None = None,
-    ) -> ChatQwen:
+    ) -> UniversalChatOpenAI:
         model = model or config.dashscope_model
         base_url = base_url or LLMFactory.DASHSCOPE_BASE_URL
         api_key = api_key or config.DASHSCOPE_API_KEY
 
-        # 参考：https://help.aliyun.com/zh/model-studio/getting-started/models
-        extra_body = {}
-        extra_body["stream"] = streaming
-
-        llm = ChatQwen(
+        llm = UniversalChatOpenAI(
             model=model,
-            temperature=temperature,
+            **UniversalModelFactory._temperature_params(model, temperature),
             streaming=streaming,
             base_url=base_url,
             api_key=SecretStr(api_key),
-            extra_body=extra_body if extra_body else None,
+            provider="dashscope" if "dashscope" in base_url else "custom",
+            preserve_reasoning_content="dashscope" in base_url or "deepseek" in base_url,
+            use_responses_api=False,
             http_client=create_llm_http_client(),
             http_async_client=create_llm_async_http_client(),
         )

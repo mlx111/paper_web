@@ -3,6 +3,7 @@ from loguru import logger
 
 from services.embodeding_service import Embodedings
 from services.chunk_image_store_service import strip_image_placeholders
+from services.es_retrieval_service import es_retrieval_service
 from services.mlivus_client_service import MilvusManager
 
 
@@ -57,6 +58,8 @@ class MlivusServerService:
                 for doc, dense_emb, sparse_emb in zip(batch, dense_embeddings, sparse_embeddings)
             ]
             self.milvus_manager.insert(insert_data)
+            # ES 双写（BM25 词法召回路）：best-effort，失败不影响 Milvus 入库
+            es_retrieval_service.index_chunks(insert_data)
 
         elapsed = time.time() - start_time
         logger.info(
@@ -77,6 +80,8 @@ class MlivusServerService:
             expr = f'_source == "{escaped_path}"'
             result = self.milvus_manager.delete(expr)
             deleted_count = result.delete_count if hasattr(result, "delete_count") else 0
+            # ES 同步清理，保持双写一致（best-effort）
+            es_retrieval_service.delete_by_source(file_path)
             logger.info("删除文件旧数据 {}，删除数量: {}", file_path, deleted_count)
             return deleted_count
         except Exception as exc:

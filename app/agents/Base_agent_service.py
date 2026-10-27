@@ -470,10 +470,40 @@ class BaseAgentService(ABC):
     def _get_run_trace_service(self):
         return getattr(self, "run_trace_service", default_run_trace_service)
 
+    def _compute_turn_number(self, session_id: str) -> int:
+        """根据 session 历史推算当前是第几轮对话（1-based）。
+
+        当前 query 还未写入 history，所以已有 HumanMessage 数 + 1 即为当前轮次。
+        历史读取出错或为空时返回 1（首轮）。
+        """
+        try:
+            history_messages = self._history_messages(session_id)
+            human_count = sum(
+                1 for msg in history_messages if isinstance(msg, HumanMessage)
+            )
+            return human_count + 1
+        except Exception:
+            return 1
+
+    def _extract_user_intent(self, question: str) -> str:
+        """从用户提问中提取简短意图摘要，用于 Langfuse trace metadata。
+
+        当前为规则版：取问题前 60 个非换行字符，去掉首尾空白。
+        生产规模下可替换为 LLM 路由分类结果，此处保持零成本零依赖。
+        """
+        if not question:
+            return ""
+        normalized = re.sub(r"\s+", " ", question.strip())
+        return normalized[:60]
+
     def _build_langfuse_callbacks(self, question: str, session_id: str) -> list | None:
         """Langfuse v2 CallbackHandler：一次问答 = 一条 trace（LLM/工具 span 树自动生成）。
 
         未配置 keys / SDK 缺失时静默返回 None，不影响问答主链路。
+
+        Phase 6 可观测性补强：trace metadata 携带 Session/turn 上下文元数据
+        （turn_number、last_user_intent、conversation_state），并对标 OpenTelemetry
+        GenAI 语义约定补 gen_ai.* 字段，使 Langfuse trace 与 OTel 兼容后端可互译。
         """
         if not config.langfuse_enabled:
             return None
@@ -483,17 +513,35 @@ class BaseAgentService(ABC):
             os.environ.setdefault("LANGFUSE_HOST", config.langfuse_host)
             from langfuse.langchain import CallbackHandler
 
+            turn_number = self._compute_turn_number(session_id)
+            user_intent = self._extract_user_intent(question)
+
             handler = CallbackHandler(
                 session_id=session_id,
                 user_id="mypaperweb",
-                trace_name=f"mypaperweb-{self.context_mode}",
+                trace_name=f"mypaperweb-{self.context_mode}-turn{turn_number}",
                 trace_metadata={
+                    # 原有字段
                     "mode": self.context_mode,
                     "agent": type(self).__name__,
                     "model": self.model_name,
                     "question_chars": len(question or ""),
+                    # Session/turn 上下文元数据（对标工业级 Session→turn→span 层级）
+                    "turn_number": turn_number,
+                    "conversation_state": self.context_mode,
+                    "last_user_intent": user_intent,
+                    "session_id": session_id,
+                    # OpenTelemetry GenAI 语义约定对标（gen_ai.* 属性）
+                    # 让 trace 可与任何 OTel 兼容后端（Grafana/Datadog/Langfuse）互译
+                    "gen_ai.system": "openai-compatible",
+                    "gen_ai.operation.name": "chat",
+                    "gen_ai.request.model": self.model_name or "unknown",
                 },
-                trace_tags=[self.context_mode, "mypaperweb"],
+                trace_tags=[
+                    self.context_mode,
+                    "mypaperweb",
+                    f"turn-{turn_number}",
+                ],
             )
             return [handler]
         except Exception as exc:

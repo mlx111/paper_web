@@ -162,6 +162,11 @@ class TargetEvaluationRequest(BaseModel):
     mode: str | None = None  # "quick" | "deep"; inferred from case_type when omitted
     tools: list[str] | None = None
     context_ids: list[str] | None = None
+    # Multi-turn driving: an external LLMOps platform reuses one session_id
+    # across turns so the agent's conversation history is exercised.
+    session_id: str | None = None
+    # Multi-turn turns must bypass the semantic cache (see EvaluationRunner).
+    bypass_cache: bool = False
 
 
 @router.post("/target")
@@ -172,7 +177,7 @@ async def evaluation_target(body: TargetEvaluationRequest):
     final answer and the tool-call trajectory, aligned to the platform's
     agent_trajectory schema::
 
-        {"answer": str, "success": bool,
+        {"answer": str, "success": bool, "session_id": str,
          "steps": [{"type": "tool_call", "tool_name": ..., "tool_args": {...}},
                    {"type": "final", "content": ...}],
          "tool_called": str|None, "tool_args": dict|None}
@@ -185,8 +190,12 @@ async def evaluation_target(body: TargetEvaluationRequest):
 
     runner_class = _load_runner_class()
     runner = runner_class(str(CASES_PATH))
-    session_id = f"llmops-{uuid.uuid4().hex[:12]}"
-    result = await runner.invoke_agent(body.query, mode=mode, session_id=session_id)
+    # Reuse the caller-supplied session (multi-turn evaluation); otherwise
+    # mint a fresh one so single-turn calls stay stateless.
+    session_id = (body.session_id or "").strip() or f"llmops-{uuid.uuid4().hex[:12]}"
+    result = await runner.invoke_agent(
+        body.query, mode=mode, session_id=session_id, skip_cache=body.bypass_cache
+    )
 
     tool_calls = result.get("tool_calls") or []
     steps: list[dict[str, Any]] = [
@@ -218,6 +227,7 @@ async def evaluation_target(body: TargetEvaluationRequest):
     payload: dict[str, Any] = {
         "answer": answer,
         "success": bool(answer) and not error,
+        "session_id": session_id,
         "steps": steps,
         "mode": mode,
         "run_id": str(meta.get("run_id") or ""),

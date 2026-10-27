@@ -65,9 +65,13 @@ def _reset_all_agents() -> None:
         from agents.deep_agent_service import deep_agent_service
         from agents.multi_agent_service import multi_agent_service
         from agents.file_agent_service import file_agent_service
+        from agents.research_workflow_service import research_workflow_service
         from evaluation import dispatcher
 
-        for svc in (quick_agent_service, deep_agent_service, multi_agent_service, file_agent_service):
+        for svc in (
+            quick_agent_service, deep_agent_service, multi_agent_service,
+            file_agent_service, research_workflow_service,
+        ):
             svc.reset_agent()
         # 模型路由的 simple agent 是懒加载缓存，置空后下次重建
         dispatcher._simple_quick_agent = None
