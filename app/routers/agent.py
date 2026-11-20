@@ -3,15 +3,31 @@
 提供基于 RAG Agent 的普通对话和流式对话接口
 """
 
+import asyncio
 import json
 from fastapi import APIRouter, HTTPException
 from sse_starlette.sse import EventSourceResponse
 from models.request import ChatRequest, ClearRequest
 from models.response import SessionInfoResponse, ApiResponse
 from agents.quick_agent_service import quick_agent_service as agent_service
+from services.bounded_executor import WorkerBusy
+from services.chat_capacity import ChatCapacity, ChatCapacityError
+from settings.config import config
 from loguru import logger
 
 router = APIRouter(prefix="/agent", tags=["对话接口"])
+chat_capacity = ChatCapacity(max(1, config.chat_max_inflight))
+
+
+def _capacity_http_error(exc: ChatCapacityError) -> HTTPException:
+    headers = {"Retry-After": "1"} if exc.status_code == 429 else None
+    return HTTPException(status_code=exc.status_code, detail=exc.detail, headers=headers)
+
+
+@router.get("/capacity")
+async def capacity_snapshot():
+    """Expose local admission counters for load tests and operations."""
+    return await chat_capacity.snapshot()
 
 
 
@@ -35,13 +51,21 @@ async def chat(request: ChatRequest):
         统一格式的对话响应
     """
     try:
+        lease = await chat_capacity.acquire(request.id)
+    except ChatCapacityError as exc:
+        raise _capacity_http_error(exc) from exc
+
+    outcome = "failed"
+    try:
         logger.info(f"[会话 {request.id}] 收到快速对话请求: {request.question}")
-        answer = await agent_service.query(
-            request.question,
-            session_id=request.id
-        )
+        async with asyncio.timeout(max(0.001, config.chat_timeout_seconds)):
+            answer = await agent_service.query(
+                request.question,
+                session_id=request.id
+            )
 
         logger.info(f"[会话 {request.id}] 快速对话完成")
+        outcome = "completed"
 
         return {
             "code": 200,
@@ -53,6 +77,14 @@ async def chat(request: ChatRequest):
             }
         }
 
+    except asyncio.CancelledError:
+        outcome = "cancelled"
+        raise
+    except TimeoutError as exc:
+        logger.warning("快速对话超时，会话: {}", request.id)
+        raise HTTPException(status_code=504, detail="Chat request timed out") from exc
+    except WorkerBusy as exc:
+        raise HTTPException(status_code=429, detail=str(exc), headers={"Retry-After": "1"}) from exc
     except Exception as e:
         logger.error(f"对话接口错误: {e}")
         return {
@@ -64,6 +96,8 @@ async def chat(request: ChatRequest):
                 "errorMessage": str(e)
             }
         }
+    finally:
+        await lease.release(outcome)
 
 @router.post("/chat_stream")
 async def chat_stream(request: ChatRequest):
@@ -89,11 +123,18 @@ async def chat_stream(request: ChatRequest):
     Returns:
         SSE 事件流
     """
+    try:
+        lease = await chat_capacity.acquire(request.id, kind="stream")
+    except ChatCapacityError as exc:
+        raise _capacity_http_error(exc) from exc
+
     logger.info(f"[会话 {request.id}] 收到流式对话请求: {request.question}")
 
     async def event_generator():
+        outcome = "failed"
+        saw_error = False
         try:
-            async for chunk in agent_service.query_stream(request.question, session_id=request.id):
+            async for chunk in _timed_stream(request):
                 chunk_type = chunk.get("type", "unknown")
                 chunk_data = chunk.get("data", None)
 
@@ -153,6 +194,7 @@ async def chat_stream(request: ChatRequest):
                         }, ensure_ascii=False)
                     }
                 elif chunk_type == "error":
+                    saw_error = True
                     # 发送错误信息
                     yield {
                         "event": "message",
@@ -163,7 +205,11 @@ async def chat_stream(request: ChatRequest):
                     }
 
             logger.info(f"[会话 {request.id}] 流式对话完成")
+            outcome = "failed" if saw_error else "completed"
 
+        except asyncio.CancelledError:
+            outcome = "cancelled"
+            raise
         except Exception as e:
             logger.error(f"流式对话接口错误: {e}")
             yield {
@@ -173,8 +219,20 @@ async def chat_stream(request: ChatRequest):
                     "data": str(e)
                 }, ensure_ascii=False)
             }
+        finally:
+            await lease.release(outcome)
 
-    return EventSourceResponse(event_generator())
+    try:
+        return EventSourceResponse(event_generator())
+    except BaseException:
+        await lease.release("failed")
+        raise
+
+
+async def _timed_stream(request: ChatRequest):
+    async with asyncio.timeout(max(0.001, config.chat_timeout_seconds)):
+        async for chunk in agent_service.query_stream(request.question, session_id=request.id):
+            yield chunk
 
 
 @router.post("/chat/clear", response_model=ApiResponse)

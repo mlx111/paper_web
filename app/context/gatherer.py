@@ -14,7 +14,6 @@ class ContextGatherer:
     - 历史消息
     - 知识库检索结果
     - 父块检索结果
-    - 结构化笔记（旧系统）
     - 结构化记忆（新系统，语义筛选）
 
     不做筛选，不做压缩，不做最终拼装。
@@ -25,18 +24,15 @@ class ContextGatherer:
         history_loader: Callable[[str], Any],
         knowledge_retriever: Callable[[str, int], Iterable[Any]] | None = None,
         parent_chunk_retriever: Callable[[str, int], Iterable[Any]] | None = None,
-        notes_loader: Callable[[str], Any] | None = None,
         memory_loader: Callable[[str, int], list[dict[str, Any]]] | None = None,
         config: ContextConfig | None = None,
     ):
         self.history_loader = history_loader
         self.knowledge_retriever = knowledge_retriever
         self.parent_chunk_retriever = parent_chunk_retriever
-        self.notes_loader = notes_loader
         self.memory_loader = memory_loader
         self.config = config or ContextConfig()
         self.max_history_messages = self.config.max_history_messages
-        self.max_note_items = self.config.max_note_items
         self.max_memory_items = self.config.max_memory_items
 
 
@@ -76,60 +72,12 @@ class ContextGatherer:
                 )
 
         return normalized
-    def _load_notes(self, session_id: str) -> list[dict[str, Any]]:
-        """
-        读取结构化笔记（旧系统）。
-
-        这里兼容两种情况：
-        1. 返回的是 NoteService
-        2. 直接返回 list
-        """
-        if self.notes_loader is None:
-            return []
-
-        notes_obj = self.notes_loader(session_id)
-
-        if isinstance(notes_obj, list):
-            raw_notes = notes_obj
-        else:
-            raw_notes = getattr(notes_obj, "list_notes", None)
-            if callable(raw_notes):
-                raw_notes = raw_notes()
-            else:
-                raw_notes = getattr(notes_obj, "notes", []) or []
-
-        normalized: list[dict[str, Any]] = []
-        for note in (raw_notes or [])[: self.max_note_items]:
-            if not isinstance(note, dict):
-                continue
-
-            title = str(note.get("title", "")).strip()
-            content = str(note.get("content", "")).strip()
-            if not content and not title:
-                continue
-
-            normalized.append(
-                {
-                    "title": title,
-                    "content": content,
-                    "tags": note.get("tags", []),
-                    "kind": note.get("kind", "note"),
-                    "importance": note.get("importance", 0.5),
-                    "metadata": note.get("extra", {}) or {},
-                }
-            )
-
-        return normalized
-
     def _load_memories(
         self, question: str, session_id: str
     ) -> list[dict[str, Any]]:
         """
         从新的结构化记忆系统中按语义筛选加载记忆。
 
-        与 _load_notes 不同：
-        - notes 全量加载，按 importance 排序取 top N
-        - memories 先做语义筛选（最多 5 条），再加载
         """
         if self.memory_loader is None:
             return []
@@ -303,26 +251,6 @@ class ContextGatherer:
                 candidates.extend(self._wrap_items(parent_items, "parent_chunk"))
             except Exception:
                 pass
-                # 旧结构化笔记也作为候选上下文加入
-        notes = self._load_notes(session_id)
-        for item in notes:
-            title = item.get("title", "")
-            content = item.get("content", "")
-            merged = f"{title}: {content}" if title else content
-
-            candidates.append(
-                ContextCandidate(
-                    source="note",
-                    content=merged,
-                    score=float(item.get("importance", 0.5) or 0.5),
-                    metadata={
-                        "kind": item.get("kind", "note"),
-                        "tags": item.get("tags", []),
-                        **(item.get("metadata", {}) or {}),
-                    },
-                )
-            )
-
         # 新结构化记忆（语义筛选后）
         memories = self._load_memories(question, session_id)
         for item in memories:
@@ -336,7 +264,7 @@ class ContextGatherer:
                     content=merged,
                     score=float(item.get("importance", 0.9) or 0.9),
                     metadata={
-                        "kind": item.get("kind", "note"),
+                        "kind": item.get("kind", "project"),
                         "tags": item.get("tags", []),
                         "source": "memory_system",
                         **(item.get("metadata", {}) or {}),

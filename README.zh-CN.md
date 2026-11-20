@@ -118,13 +118,13 @@ Deep/File Agent 会根据问题和回答自动提取高价值信息，例如：
 - 决策结论
 - 风险和问题
 
-这些内容按 session 保存到：
+这些内容由结构化记忆写入器筛选后，按项目保存到：
 
 ```text
-app/data/notes/
+app/data/memory/
 ```
 
-后续对话可以把这些 notes 重新加入上下文。
+后续对话通过 `MEMORY.md` 索引筛选相关记忆，再加入上下文。
 
 ## 项目结构
 
@@ -236,7 +236,7 @@ uploads/
 chat_history/
 volumes/
 app/data/*.json
-app/data/notes/
+app/data/memory/
 app/data/images/
 ```
 
@@ -289,9 +289,9 @@ app/data/images/
 
 ### 5. Agent 行为稳定性评估
 
-端到端评估覆盖 quick chat / deep RAG / tool 调用 / notes-aware reasoning 四类场景。
+端到端评估覆盖 quick chat / deep RAG / tool 调用三类场景。
 
-- 当前评估框架包含 **11 个端到端 case**，定义见 `app/evaluation/cases.json`。
+- 当前评估框架包含 **9 个端到端 case**，定义见 `app/evaluation/cases.json`。
 - 在已生成并提交的评估报告 `app/evaluation/reports/report.json` 中，当前记录结果为 **11/11 通过**，工具调用准确率 / 关键词命中率 / 证据命中率均为 **100%**。
 - 同一报告中的平均得分为 **0.9818**，简历或 README 中可近似记为 **0.98**。
 - 参考：`app/evaluation/`、`scripts/run_eval.py`

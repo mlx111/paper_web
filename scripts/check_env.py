@@ -246,7 +246,7 @@ def check_frontend(reporter: Reporter) -> None:
 
 
 def check_runtime_dirs(reporter: Reporter) -> None:
-    for relative in ["uploads", "chat_history", "app/data", "app/data/images", "app/data/notes"]:
+    for relative in ["uploads", "chat_history", "app/data", "app/data/images", "app/data/memory"]:
         path = PROJECT_ROOT / relative
         if path.exists():
             reporter.ok(relative, "exists")

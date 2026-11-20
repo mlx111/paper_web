@@ -18,7 +18,7 @@ from services.multimodal_embedding_service import multimodal_embedding_service
 from services.parent_chunk_service import ParentChunkStore
 from context.builder import ContextBuilder
 from utils.history import get_history
-from utils.notes import get_memory_selector, get_notes
+from utils.memory import get_memory_selector
 from services.search_ranking_singletons import search_ranking_service
 
 load_dotenv()
@@ -59,7 +59,6 @@ class RagUtilsService:
             history_loader=get_history,
             knowledge_retriever=self._retrieve_context_documents,
             parent_chunk_retriever=None,
-            notes_loader=get_notes,
             memory_loader=lambda q, n: [
                 {"title": e.name, "content": e.content, "kind": f"memory:{e.type.value}",
                  "importance": 0.9, "tags": []}
@@ -76,7 +75,6 @@ class RagUtilsService:
                 max_history_messages=12,
                 max_history_turns=6,
                 max_evidence_items=6,
-                max_note_items=4,
                 max_chars=12000,
             ),
         )

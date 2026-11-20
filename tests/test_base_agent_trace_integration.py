@@ -1,5 +1,7 @@
 import asyncio
+import time
 import sys
+import threading
 import types
 from pathlib import Path
 
@@ -24,7 +26,7 @@ for name in [
     "settings.config",
     "utils",
     "utils.history",
-    "utils.notes",
+    "utils.memory",
     "utils.rag_utils",
 ]:
     sys.modules.setdefault(name, types.ModuleType(name))
@@ -47,14 +49,15 @@ sys.modules["loguru"].logger = types.SimpleNamespace(
 sys.modules["context.builder"].ContextBuilder = object
 sys.modules["context.context_config"].ContextConfig = object
 sys.modules["models.factory"].qwen_model = types.SimpleNamespace(init_model=lambda streaming: None)
-sys.modules["settings.config"].config = types.SimpleNamespace(rag_model="test")
+sys.modules["settings.config"].config = types.SimpleNamespace(rag_model="test", langfuse_enabled=False)
 sys.modules["utils.history"].get_history = lambda session_id: None
-sys.modules["utils.notes"].save_high_value_note = lambda **kwargs: None
-sys.modules["utils.notes"].get_memory_writer = lambda: None
-sys.modules["utils.notes"].select_relevant_memories = lambda *args, **kwargs: []
+sys.modules["utils.memory"].get_memory_selector = lambda: None
+sys.modules["utils.memory"].save_memory_from_turn = lambda **kwargs: None
+sys.modules["utils.memory"].select_relevant_memories = lambda *args, **kwargs: []
 sys.modules["utils.rag_utils"].rag_utils_service = types.SimpleNamespace()
 
 from agents.Base_agent_service import BaseAgentService
+from agents import Base_agent_service as base_module
 from services.run_trace_service import RunTraceService
 
 
@@ -66,7 +69,7 @@ class AIMessageChunk:
 
 
 class _FakeAgent:
-    async def astream(self, input, stream_mode):
+    async def astream(self, input, stream_mode, config=None):
         yield AIMessageChunk(), {"langgraph_node": "agent"}
 
 
@@ -76,6 +79,121 @@ class _TestAgentService(BaseAgentService):
 
     def build_agent(self):
         return _FakeAgent()
+
+
+def test_stream_context_build_does_not_block_event_loop(tmp_path):
+    service = _TestAgentService.__new__(_TestAgentService)
+    service.__class__.context_mode = "deep"
+    service._agent_initialized = True
+    class ContextAgent:
+        async def astream(self, input, stream_mode, config=None):
+            yield AIMessageChunk(), {"langgraph_node": "agent"}
+
+    service.agent = ContextAgent()
+    service.run_trace_service = RunTraceService(base_dir=tmp_path)
+    service._save_turn = lambda *args: None
+    service._persist_memory = lambda *args: None
+    service._build_langfuse_callbacks = lambda *args: None
+    bundle = types.SimpleNamespace(mode="deep", routing_hints=[], trace={})
+
+    def slow_context(question, session_id):
+        time.sleep(0.08)
+        return [_Message(question)], bundle
+
+    service._build_messages = slow_context
+
+    async def run():
+        task = asyncio.create_task(_collect_stream(service))
+        await asyncio.sleep(0.01)
+        ticked_before_finish = not task.done()
+        await task
+        return ticked_before_finish
+
+    assert asyncio.run(run())
+
+
+async def _collect_stream(service):
+    return [event async for event in service.query_stream("question", "session")]
+
+
+def test_structured_memory_is_available_during_threaded_context_build(monkeypatch):
+    entry = types.SimpleNamespace(
+        name="preference", content="prefer concise answers",
+        type=types.SimpleNamespace(value="user"), source_session_id="prior",
+    )
+    monkeypatch.setattr(
+        base_module, "get_memory_selector",
+        lambda: types.SimpleNamespace(select_sync=lambda question, max_results: [entry]),
+    )
+    service = _TestAgentService.__new__(_TestAgentService)
+    memories = asyncio.run(asyncio.to_thread(service._retrieve_context_memories, "answer style", 4))
+    assert memories[0]["content"] == "prefer concise answers"
+
+
+def test_cancelled_stream_marks_trace_cancelled(tmp_path):
+    started = asyncio.Event()
+
+    class WaitingAgent:
+        async def astream(self, input, stream_mode, config=None):
+            started.set()
+            await asyncio.Event().wait()
+            yield AIMessageChunk(), {"langgraph_node": "agent"}
+
+    service = _TestAgentService.__new__(_TestAgentService)
+    service.__class__.context_mode = "deep"
+    service._agent_initialized = True
+    service.agent = WaitingAgent()
+    service.run_trace_service = RunTraceService(base_dir=tmp_path)
+    service._build_langfuse_callbacks = lambda *args: None
+    bundle = types.SimpleNamespace(mode="deep", routing_hints=[], trace={})
+    service._build_messages = lambda question, session_id: ([_Message(question)], bundle)
+
+    async def run():
+        stream = service.query_stream("question", "session")
+        first = await stream.__anext__()
+        task = asyncio.create_task(stream.__anext__())
+        await asyncio.wait_for(started.wait(), timeout=1)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        return first["data"]["run_id"]
+
+    run_id = asyncio.run(run())
+    assert service.run_trace_service.load_run(run_id)["status"] == "cancelled"
+
+
+def test_cancel_during_history_write_waits_for_thread_to_finish():
+    started = threading.Event()
+    finish = threading.Event()
+    calls = []
+    service = _TestAgentService.__new__(_TestAgentService)
+
+    def save_history(*args):
+        started.set()
+        finish.wait(timeout=1)
+        calls.append("history")
+
+    service._save_turn = save_history
+    service._persist_memory = lambda *args: calls.append("memory")
+
+    async def run():
+        task = asyncio.create_task(service._save_completed_turn("session", "q", "a"))
+        while not started.is_set():
+            await asyncio.sleep(0.001)
+        task.cancel()
+        await asyncio.sleep(0.01)
+        released_early = task.done()
+        finish.set()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        return released_early
+
+    assert asyncio.run(run()) is False
+    assert calls == ["history", "memory"]
 
 
 def test_stream_query_records_trace_and_exposes_run_id(tmp_path):
@@ -131,7 +249,7 @@ def test_stream_query_prefers_model_usage_metadata(tmp_path):
         response_metadata = {}
 
     class UsageAgent:
-        async def astream(self, input, stream_mode):
+        async def astream(self, input, stream_mode, config=None):
             yield UsageChunk(), {"langgraph_node": "agent"}
 
     service = _TestAgentService.__new__(_TestAgentService)

@@ -22,7 +22,6 @@ DEFAULT_SOURCE_BOOSTS = SourceBoostConfig(
         "authors/": 1.1,
         "institutions/": 1.1,
         "presentations/": 1.0,
-        "notes/": 0.8,
         "chat/": 0.5,
     },
     hard_excludes=["tmp/", "debug/", "archive/", "test/"],

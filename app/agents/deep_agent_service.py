@@ -17,7 +17,6 @@ from tools import (
     review_paper_quality,
     web_search,
 )
-from utils.notes import get_notes
 
 
 class DeepAgentService(BaseAgentService):
@@ -36,15 +35,6 @@ class DeepAgentService(BaseAgentService):
 
     def get_system_prompt_file(self) -> str:
         return "deep_agent_system.txt"
-    def _retrieve_context_notes(self, session_id: str):
-        """
-        deep 读取结构化笔记。
-
-        这样 notes 只在 deep 场景里参与上下文，
-        quick 不会被长期记忆拖慢。
-        """
-        return get_notes(session_id)
-
     def default_tools(self) -> list:
         # 本地工具 + MCP Host 运行时动态发现的外部工具（来源标记为 mcp）
         from tools.harness.harness_tool import wrap_tools_with_harness, set_healing_model

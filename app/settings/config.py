@@ -78,6 +78,8 @@ class Settings:
     debug: bool = field(default_factory=lambda: _get_bool("DEBUG", False))
     host: str = field(default_factory=lambda: _get_str("HOST", "0.0.0.0"))
     port: int = field(default_factory=lambda: _get_int("PORT", 8800))
+    chat_max_inflight: int = field(default_factory=lambda: _get_int("CHAT_MAX_INFLIGHT", 8))
+    chat_timeout_seconds: int = field(default_factory=lambda: _get_int("CHAT_TIMEOUT_SECONDS", 180))
 
     dashscope_api_key: str = field(default_factory=lambda: _get_str("DASHSCOPE_API_KEY", ""))
     dashscope_api_base: str = field(

@@ -166,7 +166,6 @@ class MCPEvaluationRunner:
             evidence_hit=trace_hit,
             must_include_hit=error_code_matches,
             must_not_include_hit=True,
-            notes_used=True,
             context_mode_correct=True,
             actual_context_mode="mcp",
             error=error or str(payload.get("error") or ""),

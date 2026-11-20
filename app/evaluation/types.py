@@ -21,7 +21,6 @@ class EvaluationCase:
     difficulty: str = "medium"
     must_include: list[str] = field(default_factory=list)
     must_not_include: list[str] = field(default_factory=list)
-    expected_notes_used: bool | None = None
     expected_context_mode: str | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
@@ -48,7 +47,6 @@ class EvaluationResult:
     evidence_hit: bool = False
     must_include_hit: bool = False
     must_not_include_hit: bool = False
-    notes_used: bool = False
     context_mode_correct: bool = False
     actual_context_mode: str = ""
     error: str = ""

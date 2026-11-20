@@ -24,7 +24,6 @@ class ContextBuilder:
         history_loader,
         knowledge_retriever=None,
         parent_chunk_retriever=None,
-        notes_loader=None,
         memory_loader=None,
         rerank_fn=None,
         config: ContextConfig | None = None,
@@ -38,7 +37,6 @@ class ContextBuilder:
             history_loader=history_loader,
             knowledge_retriever=knowledge_retriever,
             parent_chunk_retriever=parent_chunk_retriever,
-            notes_loader=notes_loader,
             memory_loader=memory_loader,
             config=self.config,
         )

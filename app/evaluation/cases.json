@@ -18,7 +18,6 @@
         "must_not_include": [
             "详细推导"
         ],
-        "expected_notes_used": false,
         "expected_context_mode": "quick",
         "description": "测试 quick 是否能简洁解释概念。"
     },
@@ -46,7 +45,6 @@
         "must_not_include": [
             "复杂分析"
         ],
-        "expected_notes_used": false,
         "expected_context_mode": "quick",
         "description": "测试 quick 是否调用时间工具。"
     },
@@ -78,7 +76,6 @@
         "must_not_include": [
             "无关展开"
         ],
-        "expected_notes_used": false,
         "expected_context_mode": "quick",
         "description": "测试 quick 是否能正确使用搜索工具。"
     },
@@ -105,7 +102,6 @@
         "must_not_include": [
             "完全一样"
         ],
-        "expected_notes_used": true,
         "expected_context_mode": "deep",
         "description": "测试 deep 是否能做结构化对比分析。"
     },
@@ -132,7 +128,6 @@
         "must_not_include": [
             "只保留全部原文"
         ],
-        "expected_notes_used": true,
         "expected_context_mode": "deep",
         "description": "测试 deep 是否理解上下文压缩问题。"
     },
@@ -158,24 +153,23 @@
         "must_not_include": [
             "只靠历史就够了"
         ],
-        "expected_notes_used": false,
         "expected_context_mode": "deep",
         "description": "测试 deep 是否能说明检索优先于历史的原因。"
     },
     {
         "id": "deep_004",
         "mode": "deep",
-        "question": "请根据当前会话中的 notes 和历史，判断我现在更偏向哪种工作流",
+        "question": "请结合当前会话历史和已保存的长期记忆，判断我现在更偏向哪种工作流",
         "expected_route": "deep",
         "expected_tools": [],
         "expected_keywords": [
-            "notes",
+            "长期记忆",
             "历史",
             "工作流"
         ],
         "expected_evidence": [
-            "note",
-            "history"
+            "记忆",
+            "历史"
         ],
         "expected_answer_type": "analysis",
         "difficulty": "hard",
@@ -185,9 +179,8 @@
         "must_not_include": [
             "完全无法判断"
         ],
-        "expected_notes_used": true,
         "expected_context_mode": "deep",
-        "description": "测试 deep 是否能利用 notes 做判断。"
+        "description": "测试 deep 是否能结合结构化记忆和历史做判断。"
     },
     {
         "id": "tool_001",
@@ -217,7 +210,6 @@
         "must_not_include": [
             "无关信息"
         ],
-        "expected_notes_used": false,
         "expected_context_mode": "quick",
         "description": "测试时间工具调用是否正确。"
     },
@@ -250,59 +242,7 @@
         "must_not_include": [
             "没有依据"
         ],
-        "expected_notes_used": false,
         "expected_context_mode": "deep",
         "description": "测试知识检索是否真的参与回答。"
-    },
-    {
-        "id": "notes_001",
-        "mode": "deep",
-        "question": "根据当前 notes，项目里上下文工程的重点是什么",
-        "expected_route": "deep",
-        "expected_tools": [],
-        "expected_keywords": [
-            "上下文工程",
-            "重点"
-        ],
-        "expected_evidence": [
-            "note"
-        ],
-        "expected_answer_type": "analysis",
-        "difficulty": "medium",
-        "must_include": [
-            "重点"
-        ],
-        "must_not_include": [
-            "没有 notes"
-        ],
-        "expected_notes_used": true,
-        "expected_context_mode": "deep",
-        "description": "测试 deep 是否能从 notes 中提取关键信息。"
-    },
-    {
-        "id": "notes_002",
-        "mode": "deep",
-        "question": "请总结一下当前项目里已经确认的设计约束",
-        "expected_route": "deep",
-        "expected_tools": [],
-        "expected_keywords": [
-            "设计约束",
-            "确认"
-        ],
-        "expected_evidence": [
-            "note",
-            "constraint"
-        ],
-        "expected_answer_type": "analysis",
-        "difficulty": "hard",
-        "must_include": [
-            "约束"
-        ],
-        "must_not_include": [
-            "随机猜测"
-        ],
-        "expected_notes_used": true,
-        "expected_context_mode": "deep",
-        "description": "测试 deep 是否会利用约束类笔记。"
     }
 ]

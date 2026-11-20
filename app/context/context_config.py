@@ -42,9 +42,6 @@ class ContextConfig:
     # 最终上下文最大字符数
     max_chars: int = 12000
     
-    # 最多保留多少条笔记（旧系统）
-    max_note_items: int = 4
-
     # 最多保留多少条记忆（新结构化记忆系统，语义筛选后）
     max_memory_items: int = 4
 

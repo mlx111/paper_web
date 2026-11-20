@@ -118,17 +118,6 @@ def tool_args_hit(
     return True
 
 
-def notes_used_hit(actual_notes_used: bool, expected_notes_used: bool | None) -> bool:
-    """
-    判断 notes 使用是否符合预期。
-
-    如果 case 没有明确指定 expected_notes_used，就默认视为不考核。
-    """
-    if expected_notes_used is None:
-        return True
-    return actual_notes_used == expected_notes_used
-
-
 def context_mode_hit(actual_context_mode: str, expected_context_mode: str | None) -> bool:
     """
     判断上下文模式是否符合预期。
@@ -145,12 +134,11 @@ def calc_result_score(result: EvaluationResult) -> float:
     score = 0.0
     score += 0.20 if result.route_correct else 0.0
     score += 0.10 if result.tool_correct else 0.0
-    score += 0.05 if result.tool_args_correct else 0.0
+    score += 0.10 if result.tool_args_correct else 0.0
     score += 0.15 if result.keyword_hit else 0.0
-    score += 0.10 if result.evidence_hit else 0.0
+    score += 0.15 if result.evidence_hit else 0.0
     score += 0.15 if result.must_include_hit else 0.0
     score += 0.10 if result.must_not_include_hit else 0.0
-    score += 0.10 if result.notes_used else 0.0
     score += 0.05 if result.context_mode_correct else 0.0
     return round(score, 4)
 

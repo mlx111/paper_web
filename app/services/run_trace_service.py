@@ -10,6 +10,7 @@ from uuid import uuid4
 
 
 _SENSITIVE_KEYS = ("api_key", "apikey", "token", "password", "secret", "authorization")
+_USAGE_COUNT_KEYS = frozenset({"total_tokens", "prompt_tokens", "completion_tokens", "input_tokens", "output_tokens"})
 
 
 def _utc_now() -> str:
@@ -26,7 +27,12 @@ def sanitize_trace_payload(value: Any) -> Any:
         sanitized: dict[str, Any] = {}
         for key, item in value.items():
             key_text = str(key)
-            if any(sensitive in key_text.lower() for sensitive in _SENSITIVE_KEYS):
+            usage_field = (key_text.lower() == "token_usage" and isinstance(item, dict)) or (
+                key_text.lower() in _USAGE_COUNT_KEYS and isinstance(item, (int, float))
+            )
+            if not usage_field and any(
+                sensitive in key_text.lower() for sensitive in _SENSITIVE_KEYS
+            ):
                 sanitized[key_text] = "***"
             else:
                 sanitized[key_text] = sanitize_trace_payload(item)

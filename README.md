@@ -4,7 +4,7 @@
 
 MyPaperWeb is an Agentic RAG web application for paper reading, document Q&A, and research-oriented analysis. It combines a Vue 3 frontend, a FastAPI backend, Milvus vector retrieval, and LangChain/LangGraph based agents to support chat, file-grounded question answering, and scientific research workflows.
 
-The project is designed as a practical AI application rather than a single prompt demo. It includes document ingestion, multi-level chunking, vector indexing, context engineering, module-isolated agents, streaming responses, visual document Q&A, long-term notes, and evaluation utilities.
+The project is designed as a practical AI application rather than a single prompt demo. It includes document ingestion, multi-level chunking, vector indexing, context engineering, module-isolated agents, streaming responses, visual document Q&A, structured long-term memory, and evaluation utilities.
 
 ## Features
 
@@ -77,14 +77,14 @@ flowchart LR
 The application is split into three user-facing modules:
 
 - **Chat Assistant** uses the quick agent for everyday conversation and avoids unnecessary RAG calls.
-- **File Q&A** uses the deep agent, retrieval tools, document context, and optional long-term notes.
+- **File Q&A** uses the deep agent, retrieval tools, document context, and relevant structured memory.
 - **Research** uses an independent LangGraph workflow for paper search, planning, tool execution, and answer review.
 
 Each module has its own frontend session state and backend history path, so chat, file Q&A, and research conversations do not pollute each other.
 
 ### Context Engineering
 
-The context layer is separated from the agent layer. `ContextBuilder` collects history, notes, and retrieval candidates, selects relevant evidence, structures the context, compresses it under budget, and assembles a model-ready context bundle. This avoids duplicating prompt construction logic across agents.
+The context layer is separated from the agent layer. `ContextBuilder` collects history, structured memory, and retrieval candidates, selects relevant evidence, structures the context, compresses it under budget, and assembles a model-ready context bundle. This avoids duplicating prompt construction logic across agents.
 
 ### Document-Centered RAG
 
@@ -108,9 +108,9 @@ The placeholder stays in the chunk text so the model can cite the image position
 
 The frontend replaces the placeholder with the real image during Markdown rendering. This makes the file module support text-and-image grounded answers without requiring a full multimodal vector index.
 
-### Long-Term Notes
+### Structured Long-Term Memory
 
-The deep/file agent can persist high-value memories into `app/data/notes/`, including user preferences, constraints, decisions, summaries, and blockers. Notes are scoped by session and can be loaded back into the context builder for later turns.
+Completed turns can be evaluated by `MemoryWriter` and saved under `app/data/memory/`. `MEMORY.md` indexes the files, and `MemorySelector` loads relevant entries into later context bundles. The legacy session-scoped notes store is no longer used.
 
 ### Research Workflow
 
@@ -134,7 +134,7 @@ mypaperweb/
 │   ├── agents/              # quick, deep, file, and research agents
 │   ├── context/             # context gather/select/structure/compress/assemble pipeline
 │   ├── routers/             # FastAPI routers
-│   ├── services/            # Milvus, indexing, splitting, image, notes, and user services
+│   ├── services/            # Milvus, indexing, splitting, image, memory, and user services
 │   ├── tools/               # agent tools
 │   ├── evaluation/          # evaluation runner, metrics, reports, cases
 │   ├── data/                # local runtime data, ignored by Git
@@ -167,7 +167,7 @@ Then open:
 - Optional Milvus admin console (Attu): add `--profile tools` → http://localhost:8001
 - Optional MySQL (login / chat history features): add `--profile mysql`
 
-Persisted data (uploaded documents, notes, checkpoints, research artifacts) lives in Docker volumes — run `docker compose down` (without `-v`) to stop while keeping data.
+Persisted data (uploaded documents, structured memory, checkpoints, research artifacts) lives in Docker volumes — run `docker compose down` (without `-v`) to stop while keeping data.
 
 > Port 5174 is used to avoid clashing with the sibling LLMOps platform stack (5173). If you only run this project, change the frontend port mapping to `5173:80` in `docker-compose.yml`.
 
@@ -258,7 +258,7 @@ uploads/
 chat_history/
 volumes/
 app/data/*.json
-app/data/notes/
+app/data/memory/
 app/data/images/
 ```
 
@@ -287,7 +287,7 @@ npm run build
 - Separated quick chat, file-grounded Q&A, and research workflow into independent modules and sessions.
 - Added document upload, incremental indexing, Milvus hybrid retrieval, and parent-child chunk merging.
 - Added visual document Q&A through image extraction, placeholders, backend `image_map`, and frontend Markdown image rendering.
-- Added session-level long-term notes for preferences, constraints, summaries, and reusable context.
+- Added structured long-term memory for preferences, constraints, summaries, and reusable context.
 - Built a LangGraph research workflow with planning, tool execution, and judge feedback.
 - Added evaluation scaffolding for checking routes, tools, keywords, context mode, and answer quality.
 
@@ -323,8 +323,8 @@ Source Boost + Keyword Boost 重排序，作用于 Research Workflow 中 `academ
 - 证据位置: `scripts/benchmark_structured_memory.py`, `tests/test_structured_memory.py`
 
 ### 5. Agent 行为稳定性评估
-11 个端到端测试用例覆盖 quick chat / deep RAG / tool 调用 / notes 读取四类场景。
-- 当前评估框架包含 **11 个端到端 case**，覆盖 quick chat / deep RAG / tool 调用 / notes-aware reasoning，定义见 `app/evaluation/cases.json`。
+9 个端到端测试用例覆盖 quick chat / deep RAG / tool 调用三类场景。
+- 当前评估框架包含 **9 个端到端 case**，覆盖 quick chat / deep RAG / tool 调用，定义见 `app/evaluation/cases.json`。
 - 在已生成并提交的评估报告 `app/evaluation/reports/report.json` 中，当前记录结果为 **11/11 通过**，工具调用准确率 / 关键词命中率 / 证据命中率均为 **100%**。
 - 同一报告中的平均得分为 **0.9818**，README 中可近似记为 **0.98**。
 - 参考: `app/evaluation/`, `scripts/run_eval.py`

@@ -1,6 +1,10 @@
 import pytest
 
-from services.run_trace_service import RunTraceService
+from services.run_trace_service import RunTraceService, sanitize_trace_payload
+
+
+def test_token_usage_string_is_redacted():
+    assert sanitize_trace_payload({"token_usage": "secret"}) == {"token_usage": "***"}
 
 
 def test_records_successful_step(tmp_path):
@@ -132,6 +136,9 @@ def test_step_input_and_output_redact_sensitive_fields(tmp_path):
         step.set_output(
             {
                 "result": "ok",
+                "token_usage": {"input_tokens": 10, "output_tokens": 4},
+                "private_token_usage": "do-not-log",
+                "access_token": "private",
                 "authorization": "Bearer secret",
                 "items": [
                     {
@@ -150,6 +157,9 @@ def test_step_input_and_output_redact_sensitive_fields(tmp_path):
     assert recorded["input"]["nested"]["token"] == "***"
     assert recorded["input"]["nested"]["count"] == 3
     assert recorded["output"]["result"] == "ok"
+    assert recorded["output"]["token_usage"] == {"input_tokens": 10, "output_tokens": 4}
+    assert recorded["output"]["private_token_usage"] == "***"
+    assert recorded["output"]["access_token"] == "***"
     assert recorded["output"]["authorization"] == "***"
     assert recorded["output"]["items"][0]["password"] == "***"
     assert recorded["output"]["items"][0]["title"] == "paper"

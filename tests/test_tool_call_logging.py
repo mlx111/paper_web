@@ -24,7 +24,7 @@ for name in [
     "settings.config",
     "utils",
     "utils.history",
-    "utils.notes",
+    "utils.memory",
     "utils.rag_utils",
 ]:
     sys.modules.setdefault(name, types.ModuleType(name))
@@ -48,9 +48,9 @@ sys.modules["context.context_config"].ContextConfig = object
 sys.modules["models.factory"].qwen_model = types.SimpleNamespace(init_model=lambda streaming: None)
 sys.modules["settings.config"].config = types.SimpleNamespace(rag_model="test")
 sys.modules["utils.history"].get_history = lambda session_id: None
-sys.modules["utils.notes"].save_high_value_note = lambda **kwargs: None
-sys.modules["utils.notes"].get_memory_writer = lambda: None
-sys.modules["utils.notes"].select_relevant_memories = lambda *args, **kwargs: []
+sys.modules["utils.memory"].get_memory_selector = lambda: None
+sys.modules["utils.memory"].save_memory_from_turn = lambda **kwargs: None
+sys.modules["utils.memory"].select_relevant_memories = lambda *args, **kwargs: []
 sys.modules["utils.rag_utils"].rag_utils_service = types.SimpleNamespace()
 
 from agents.Base_agent_service import BaseAgentService
@@ -74,32 +74,20 @@ class ToolCallLoggingTest(unittest.TestCase):
             ["web_search", "get_current_time"],
         )
 
-    def test_extracts_memory_note_from_chinese_preference(self):
+    def test_persists_structured_memory_once(self):
         service = _TestAgentService.__new__(_TestAgentService)
-        service.context_mode = "deep"
+        calls = []
+        from agents import Base_agent_service as module
 
-        note = service._extract_memory_note(
-            "session-1",
-            "请记住：以后回答论文问题时，我偏好中文总结。",
-            "好的，我会记住这个偏好，以后优先使用中文总结。",
-        )
+        original = module.save_memory_from_turn
+        module.save_memory_from_turn = lambda **kwargs: calls.append(kwargs)
+        try:
+            service._persist_memory("session-1", "Remember my preference", "Understood")
+        finally:
+            module.save_memory_from_turn = original
 
-        self.assertIsNotNone(note)
-        self.assertEqual(note["kind"], "preference")
-        self.assertGreaterEqual(note["importance"], 0.8)
-
-    def test_extracts_memory_note_from_chinese_constraint(self):
-        service = _TestAgentService.__new__(_TestAgentService)
-        service.context_mode = "deep"
-
-        note = service._extract_memory_note(
-            "session-1",
-            "以后必须先总结结论，不要直接堆代码。",
-            "明白，以后必须先总结结论，不要直接堆代码。",
-        )
-
-        self.assertIsNotNone(note)
-        self.assertEqual(note["kind"], "constraint")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["session_id"], "session-1")
 
 
 class _TestAgentService(BaseAgentService):

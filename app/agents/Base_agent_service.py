@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import traceback
@@ -15,10 +16,14 @@ from context.builder import ContextBuilder
 from context.context_config import ContextConfig
 from models.factory import qwen_model
 from settings.config import config
+from services.bounded_executor import BoundedExecutor
 from services.run_trace_service import default_run_trace_service
 from utils.history import get_history
-from utils.notes import save_high_value_note, get_memory_writer, select_relevant_memories
+from utils.memory import get_memory_selector, save_memory_from_turn
 from utils.rag_utils import rag_utils_service
+
+
+_context_executor = BoundedExecutor(max(1, getattr(config, "chat_max_inflight", 8)))
 
 
 class BaseAgentService(ABC):
@@ -28,7 +33,6 @@ class BaseAgentService(ABC):
     这一版的核心目标是：
     - 统一上下文构建入口
     - 不让 quick / deep / router 各自拼上下文
-    - notes 作为可选长期记忆层，由子类决定是否接入
     """
 
     context_mode: str = "deep"
@@ -127,48 +131,26 @@ class BaseAgentService(ABC):
         retrieved = rag_utils_service.retrieve_documents(query=query, top_k=top_k)
         return retrieved.get("docs", [])
 
-    def _retrieve_context_notes(self, session_id: str):
-        """
-        给 ContextBuilder 用的 notes 读取适配器（旧系统）。
-
-        默认不接 notes。
-        如果某个子类需要 notes，可以重写这个方法。
-        """
-        return None
-
     def _retrieve_context_memories(self, question: str, limit: int) -> list[dict[str, Any]]:
         """
-        给 ContextBuilder 用的结构化记忆加载适配器（新系统）。
-
-        使用语义筛选，只加载与当前问题相关的记忆。
+        Load structured memory with the synchronous selector used by ContextBuilder.
         """
         try:
-            import asyncio
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                # Running in async context — use sync fallback
-                from utils.notes import get_memory_selector
-                selector = get_memory_selector()
-                entries = selector.select_sync(question, max_results=limit)
-                return [
-                    {
-                        "title": e.name,
-                        "content": e.content,
-                        "kind": e.type.value,
-                        "importance": 0.9,
-                        "tags": ["memory", e.type.value],
-                        "metadata": {
-                            "memory_type": e.type.value,
-                            "source_session": e.source_session_id,
-                        },
-                    }
-                    for e in entries
-                ]
-            else:
-                # Synchronous context — run async
-                import asyncio as _asyncio
-                result = _asyncio.run(select_relevant_memories(question, max_results=limit))
-                return result
+            entries = get_memory_selector().select_sync(question, max_results=limit)
+            return [
+                {
+                    "title": entry.name,
+                    "content": entry.content,
+                    "kind": entry.type.value,
+                    "importance": 0.9,
+                    "tags": ["memory", entry.type.value],
+                    "metadata": {
+                        "memory_type": entry.type.value,
+                        "source_session": entry.source_session_id,
+                    },
+                }
+                for entry in entries
+            ]
         except Exception:
             return []
 
@@ -176,7 +158,6 @@ class BaseAgentService(ABC):
         """
         统一创建 ContextBuilder。
 
-        现在同时接入旧 notes 系统和新结构化记忆系统。
         """
         memory_loader = None
         if self.context_config.enable_structured_memory:
@@ -186,7 +167,6 @@ class BaseAgentService(ABC):
             history_loader=self.history_loader,
             knowledge_retriever=self._retrieve_context_documents,
             parent_chunk_retriever=None,
-            notes_loader=self._retrieve_context_notes,
             memory_loader=memory_loader,
             rerank_fn=None,
             config=self.context_config,
@@ -205,231 +185,12 @@ class BaseAgentService(ABC):
             payload.append(AIMessage(content=answer))
         history.add_messages(payload)
 
-    def _normalize_text(self, value: str) -> str:
-        return re.sub(r"\s+", " ", (value or "").strip())
-
-    def _shorten_text(self, value: str, limit: int) -> str:
-        text = self._normalize_text(value)
-        if len(text) <= limit:
-            return text
-        return text[: max(0, limit - 3)].rstrip() + "..."
-
-    def _extract_memory_note(self, session_id: str, question: str, answer: str) -> dict[str, Any] | None:
-        """
-        Extract a conservative memory candidate from a completed answer.
-
-        Only high-signal content should survive this gate.
-        """
-        question_text = self._normalize_text(question)
-        answer_text = self._normalize_text(answer)
-        if not answer_text:
-            return None
-
-        combined = f"{question_text} {answer_text}".lower()
-
-        rule_set: list[tuple[str, tuple[str, ...], float]] = [
-            (
-                "constraint",
-                (
-                    "must not",
-                    "must ",
-                    "never",
-                    "cannot",
-                    "can't",
-                    "avoid",
-                    "limit",
-                    "constraint",
-                    "required",
-                    "require",
-                    "do not",
-                    "don't",
-                    "必须",
-                    "务必",
-                    "一定要",
-                    "不能",
-                    "不要",
-                    "禁止",
-                    "避免",
-                    "限制",
-                    "约束",
-                    "要求",
-                ),
-                0.92,
-            ),
-            (
-                "decision",
-                (
-                    "recommend",
-                    "should",
-                    "best",
-                    "choose",
-                    "decide",
-                    "decision",
-                    "prefer",
-                    "建议",
-                    "推荐",
-                    "应该",
-                    "最好",
-                    "选择",
-                    "决定",
-                ),
-                0.88,
-            ),
-            (
-                "preference",
-                (
-                    "prefer",
-                    "like",
-                    "favorite",
-                    "favourite",
-                    "want",
-                    "rather",
-                    "偏好",
-                    "喜欢",
-                    "希望",
-                    "想要",
-                    "倾向",
-                ),
-                0.84,
-            ),
-            (
-                "blocker",
-                (
-                    "blocked",
-                    "problem",
-                    "issue",
-                    "risk",
-                    "bug",
-                    "failure",
-                    "error",
-                    "问题",
-                    "风险",
-                    "错误",
-                    "失败",
-                    "缺陷",
-                    "阻塞",
-                ),
-                0.8,
-            ),
-            (
-                "summary",
-                (
-                    "in summary",
-                    "to sum up",
-                    "overall",
-                    "key point",
-                    "key points",
-                    "summary",
-                    "总结",
-                    "概括",
-                    "要点",
-                    "重点",
-                    "结论",
-                ),
-                0.76,
-            ),
-            (
-                "memory",
-                (
-                    "remember",
-                    "keep in mind",
-                    "note that",
-                    "long-term",
-                    "for later",
-                    "记住",
-                    "记忆",
-                    "以后",
-                    "后续",
-                    "长期",
-                    "留意",
-                ),
-                0.82,
-            ),
-        ]
-
-        kind = None
-        importance = 0.0
-        for candidate_kind, patterns, candidate_importance in rule_set:
-            if any(pattern in combined for pattern in patterns):
-                kind = candidate_kind
-                importance = candidate_importance
-                break
-
-        if kind is None:
-            if len(answer_text) >= 220 and any(
-                token in combined
-                for token in (
-                    "important",
-                    "key",
-                    "crucial",
-                    "stable",
-                    "always",
-                    "must",
-                    "重要",
-                    "关键",
-                    "核心",
-                    "稳定",
-                    "总是",
-                    "必须",
-                )
-            ):
-                kind = "summary"
-                importance = 0.7
-            else:
-                return None
-
-        title_source = question_text or answer_text
-        title = f"{kind}: {self._shorten_text(title_source, 72)}"
-        content = self._shorten_text(
-            f"Question: {question_text}\nAnswer: {answer_text}",
-            1200,
-        )
-
-        return {
-            "title": title,
-            "content": content,
-            "kind": kind,
-            "importance": importance,
-            "tags": [kind, self.context_mode],
-            "extra": {
-                "source": "agent_memory",
-                "session_id": session_id,
-                "question_preview": self._shorten_text(question_text, 160),
-                "answer_preview": self._shorten_text(answer_text, 240),
-                "reason": kind,
-            },
-        }
-
     def _persist_memory(self, session_id: str, question: str, answer: str) -> None:
-        """
-        Persist a high-value memory note when the response looks reusable.
-
-        Saves to both:
-        1. Legacy NoteService (app/data/notes/)
-        2. New structured Memory system (app/data/memory/)
-        """
+        """Save reusable information through the structured memory writer."""
         if not answer:
             return
 
-        memory_note = self._extract_memory_note(session_id, question, answer)
-        if memory_note is None:
-            return
-
-        # Legacy system
-        saved = save_high_value_note(
-            session_id=session_id,
-            title=memory_note["title"],
-            content=memory_note["content"],
-            tags=memory_note["tags"],
-            kind=memory_note["kind"],
-            importance=memory_note["importance"],
-            source="agent_memory",
-            extra=memory_note["extra"],
-        )
-
-        # New structured memory system
         try:
-            from utils.notes import save_memory_from_turn
             mem_result = save_memory_from_turn(
                 user_message=question,
                 assistant_response=answer,
@@ -437,23 +198,29 @@ class BaseAgentService(ABC):
             )
             if mem_result:
                 logger.info(
-                    "{} 结构化记忆写入完成，会话: {}，type: {}，title: {}",
+                    "{} structured memory saved for session {}: {}",
                     self.__class__.__name__,
                     session_id,
-                    mem_result["type"],
                     mem_result["title"],
                 )
         except Exception:
-            pass  # New system failure is non-fatal
+            logger.exception("Structured memory save failed for session {}", session_id)
 
-        if saved is not None:
-            logger.info(
-                "{} 记忆写入完成，会话: {}，kind: {}，title: {}",
-                self.__class__.__name__,
-                session_id,
-                memory_note["kind"],
-                memory_note["title"],
-            )
+    async def _save_completed_turn(self, session_id: str, question: str, answer: str) -> None:
+        def write_turn():
+            self._save_turn(session_id, question, answer)
+            self._persist_memory(session_id, question, answer)
+
+        write_task = asyncio.create_task(asyncio.to_thread(write_turn))
+        try:
+            await asyncio.shield(write_task)
+        except asyncio.CancelledError:
+            # Keep the session occupied until the background file write ends.
+            try:
+                await write_task
+            except Exception:
+                logger.exception("Turn write failed after cancellation for session {}", session_id)
+            raise
 
     def build_context_bundle(self, question: str, session_id: str):
         """
@@ -784,7 +551,7 @@ class BaseAgentService(ABC):
                         "top_k": self.context_top_k,
                     }
                 )
-                messages, bundle = self._build_messages(question, session_id)
+                messages, bundle = await _context_executor.run(self._build_messages, question, session_id)
                 trace_step.set_output(
                     {
                         "context_mode": bundle.mode,
@@ -836,13 +603,16 @@ class BaseAgentService(ABC):
             self._log_tool_usage(session_id, self._extract_tool_names(messages_result))
 
             if answer:
-                self._save_turn(session_id, question, answer)
-                self._persist_memory(session_id, question, answer)
+                await self._save_completed_turn(session_id, question, answer)
 
             logger.info("{} 对话完成，会话: {}", self.__class__.__name__, session_id)
             trace_service.end_run(trace_run.run_id, status="completed")
             self._flush_langfuse(callbacks)
             return answer
+        except asyncio.CancelledError:
+            if trace_run is not None:
+                self._get_run_trace_service().end_run(trace_run.run_id, status="cancelled")
+            raise
         except Exception as exc:
             if trace_run is not None:
                 try:
@@ -878,7 +648,7 @@ class BaseAgentService(ABC):
                         "top_k": self.context_top_k,
                     }
                 )
-                messages, bundle = self._build_messages(question, session_id)
+                messages, bundle = await _context_executor.run(self._build_messages, question, session_id)
                 trace_step.set_output(
                     {
                         "context_mode": bundle.mode,
@@ -896,7 +666,7 @@ class BaseAgentService(ABC):
 
             # 先把上下文元信息吐给外层评估器。
             # 这样 runner 可以准确知道这次请求用了什么 context_mode，
-            # 以及 context 里到底有没有 notes / history / evidence。
+            # 以及 context 里的历史、结构化记忆与证据情况。
             yield {
                 "type": "context",
                 "data": {
@@ -1037,13 +807,16 @@ class BaseAgentService(ABC):
 
             final_answer = "".join(answer_parts).strip()
             if final_answer:
-                self._save_turn(session_id, question, final_answer)
-                self._persist_memory(session_id, question, final_answer)
+                await self._save_completed_turn(session_id, question, final_answer)
 
             logger.info("{} 流式对话完成，会话: {}", self.__class__.__name__, session_id)
             trace_service.end_run(trace_run.run_id, status="completed")
             self._flush_langfuse(callbacks)
             yield {"type": "complete"}
+        except asyncio.CancelledError:
+            if trace_run is not None:
+                self._get_run_trace_service().end_run(trace_run.run_id, status="cancelled")
+            raise
         except Exception as exc:
             if trace_run is not None:
                 try:

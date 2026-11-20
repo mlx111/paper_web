@@ -15,7 +15,6 @@ from .metrics import (
     keyword_hit,
     must_include_hit,
     must_not_include_hit,
-    notes_used_hit,
     summarize,
     tool_args_hit,
     tool_hit,
@@ -439,11 +438,6 @@ class EvaluationRunner:
             run_meta["trace_load_error"] = trace_load_error
 
         actual_context_mode = str(run_meta.get("context_mode", "") or "")
-        context_trace = run_meta.get("context_trace") or {}
-        actual_notes_used = False
-        if isinstance(context_trace, dict):
-            actual_notes_used = int(context_trace.get("note_count", 0) or 0) > 0
-
         expected_context_mode = case.expected_context_mode or actual_route
         expected_route = (case.expected_route or actual_route).strip().lower()
         route_correct = actual_route == expected_route
@@ -460,7 +454,6 @@ class EvaluationRunner:
         ev_hit = keyword_hit(answer_text, case.expected_evidence)
         include_hit = must_include_hit(answer_text, case.must_include)
         exclude_hit = must_not_include_hit(answer_text, case.must_not_include)
-        notes_hit = notes_used_hit(actual_notes_used, case.expected_notes_used)
         context_mode_correct = context_mode_hit(actual_context_mode, expected_context_mode)
 
         estimated_token_usage = self._estimate_tokens(answer_text) + self._estimate_tokens(json.dumps(run_meta, ensure_ascii=False))
@@ -484,7 +477,6 @@ class EvaluationRunner:
             evidence_hit=ev_hit,
             must_include_hit=include_hit,
             must_not_include_hit=exclude_hit,
-            notes_used=notes_hit,
             context_mode_correct=context_mode_correct,
             actual_context_mode=actual_context_mode,
             error=error,
@@ -496,8 +488,6 @@ class EvaluationRunner:
                 "expected_answer_type": case.expected_answer_type,
                 "extra": case.extra,
                 "expected_context_mode": expected_context_mode,
-                "expected_notes_used": case.expected_notes_used,
-                "actual_notes_used": actual_notes_used,
                 **run_meta,
             },
         )
